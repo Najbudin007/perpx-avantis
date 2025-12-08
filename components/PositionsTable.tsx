@@ -46,8 +46,8 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition }
         <h3 className="text-white font-semibold text-lg">Open Positions ({positions.length})</h3>
       </div>
       
-      {/* Scrollable Table Body */}
-      <div className="overflow-x-auto">
+      {/* Scrollable Table Body - Responsive and scrollable */}
+      <div className="overflow-x-auto" style={{ maxHeight: '500px', overflowY: 'auto' }}>
         {/* Mobile View: Card-based */}
         <div className="block lg:hidden">
           <div className="p-4 space-y-4">

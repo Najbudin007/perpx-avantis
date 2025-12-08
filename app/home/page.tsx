@@ -40,52 +40,6 @@ interface TokenBalance {
 }
 
 // Memoized components for better performance
-const WalletSetupCard = ({ isLoading, error, onRetry, hasExistingWallet }: { isLoading: boolean; error: string | null; onRetry?: () => void; hasExistingWallet?: boolean }) => (
-  <Card className="bg-[#1a1a1a] border-[#262626] p-4 sm:p-6 rounded-2xl text-center">
-    <div className="space-y-4">
-      <div className="w-12 h-12 bg-[#7c3aed] rounded-full flex items-center justify-center mx-auto">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-white">
-          <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </div>
-      <div>
-        <h2 className="text-white font-semibold text-lg mb-2">Setting Up Your Wallet</h2>
-        <p className="text-[#9ca3af] text-sm mb-4">
-          {error ? 'Failed to create wallet' : hasExistingWallet ? 'Loading your wallet...' : 'Creating your personal trading wallet...'}
-        </p>
-      </div>
-      {isLoading && (
-        <div className="flex items-center justify-center space-x-2">
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-          <span className="text-white">{hasExistingWallet ? 'Loading wallet...' : 'Creating wallet...'}</span>
-        </div>
-      )}
-      {error && (
-        <div className="space-y-3">
-          <div className="bg-red-900/20 border border-red-600/30 rounded-lg p-3">
-          <p className="text-red-400 text-sm">{error}</p>
-          </div>
-          {onRetry && (
-            <button
-              onClick={onRetry}
-              className="px-4 py-2 bg-[#7c3aed] hover:bg-[#6d28d9] text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              Retry
-            </button>
-          )}
-        </div>
-      )}
-      {!error && !isLoading && (
-      <p className="text-[#6b7280] text-xs">
-        Your wallet will be ready in a moment
-      </p>
-      )}
-    </div>
-  </Card>
-)
-
 const PortfolioBalanceCard = ({ 
   avantisBalance,
   totalProfits, 
@@ -245,7 +199,9 @@ const PortfolioBalanceCard = ({
 
 const TradingCard = ({ 
   targetProfit, 
-  setTargetProfit, 
+  setTargetProfit,
+  targetProfitPercent,
+  setTargetProfitPercent,
   investmentAmount,
   setInvestmentAmount, 
   primaryWallet, 
@@ -264,6 +220,8 @@ const TradingCard = ({
 }: {
   targetProfit: string
   setTargetProfit: (value: string) => void
+  targetProfitPercent: string
+  setTargetProfitPercent: (value: string) => void
   investmentAmount: string
   setInvestmentAmount: (value: string) => void
   primaryWallet: { address: string; privateKey?: string; chain: string } | null
@@ -285,9 +243,8 @@ const TradingCard = ({
   const [depositAsset, setDepositAsset] = useState<'USDC' | 'ETH'>('USDC')
   const [depositAmount, setDepositAmount] = useState('')
   const [hasSuccessfulDeposit, setHasSuccessfulDeposit] = useState(false)
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
   const [lossThreshold, setLossThreshold] = useState('10')
-  const [maxPositions, setMaxPositions] = useState('3')
+  const [maxPositions, setMaxPositions] = useState('1')
   
   // Min/Max validation constants
   const MIN_INVESTMENT = 10 // Minimum $10 to trade
@@ -295,6 +252,24 @@ const TradingCard = ({
   
   // Parse investment amount for validation
   const investmentNum = parseFloat(investmentAmount) || 0
+  const targetProfitPercentNum = parseFloat(targetProfitPercent) || 0
+  // Calculate target profit USD from percent for validation and trading
+  const targetProfitNum = investmentNum > 0 && targetProfitPercentNum > 0 
+    ? (targetProfitPercentNum / 100) * investmentNum 
+    : 0
+
+  // Sync targetProfit USD value when percent or investment changes
+  useEffect(() => {
+    if (targetProfitPercent && investmentNum > 0) {
+      const pct = parseFloat(targetProfitPercent)
+      if (!isNaN(pct) && pct >= 0) {
+        const amount = (pct / 100) * investmentNum
+        setTargetProfit(amount.toFixed(2))
+      }
+    } else if (!targetProfitPercent) {
+      setTargetProfit("")
+    }
+  }, [targetProfitPercent, investmentAmount, investmentNum, setTargetProfit])
   
   // Calculate commission fee (1% of trading amount)
   const commissionFee = investmentNum * FEE_PERCENTAGE
@@ -316,6 +291,8 @@ const TradingCard = ({
   const hasEnoughForFee = avantisBalance >= totalRequired
   const isInvestmentValid = investmentNum >= MIN_INVESTMENT && investmentNum <= MAX_INVESTMENT && hasEnoughForFee
   const isBalanceTooLow = avantisBalance < MIN_BALANCE_REQUIRED
+  // Check if percent exceeds 100% (shouldn't happen due to clamping, but safety check)
+  const isTargetProfitTooHigh = targetProfitPercentNum > 100
 
   const explorerBaseUrl = process.env.NEXT_PUBLIC_AVANTIS_NETWORK === 'base-mainnet'
     ? 'https://basescan.org'
@@ -341,26 +318,29 @@ const TradingCard = ({
 
   const handleStartTrading = async () => {
     // Validate that both fields are filled
-    if (!targetProfit || !investmentAmount) {
+    if (!targetProfitPercent || !investmentAmount) {
       // You could show an error message here if needed
       return;
     }
     
-    const profitNum = parseFloat(targetProfit);
+    const profitPercentNum = parseFloat(targetProfitPercent);
     const investmentNum = parseFloat(investmentAmount);
     
     // Validate numeric values
-    if (isNaN(profitNum) || profitNum <= 0) {
+    if (isNaN(profitPercentNum) || profitPercentNum <= 0 || profitPercentNum > 100) {
       return;
     }
     
     if (isNaN(investmentNum) || investmentNum <= 0) {
       return;
     }
+
+    // Calculate target profit USD from percent (already validated to be <= 100%)
+    const profitNum = (profitPercentNum / 100) * investmentNum;
     
     // Redirect to chat page with trading parameters
     const params = new URLSearchParams({
-      profit: targetProfit,
+      profit: profitNum.toString(),
       investment: investmentAmount,
       mode: 'real', // Use real trading mode
       lossThreshold: lossThreshold,
@@ -378,57 +358,177 @@ const TradingCard = ({
       <Card className="bg-[#1a1a1a] border-[#262626] p-4 sm:p-6 rounded-2xl">
     <div className="space-y-4">
       <div className="flex items-center space-x-2">
-        <div className="w-8 h-8 bg-[#8759ff] rounded-lg flex items-center justify-center">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-white">
-            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </div>
-        <h3 className="text-white font-semibold text-lg">Start Trading</h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#8759ff]">
+          <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor"/>
+        </svg>
+        <h3 className="text-white font-semibold text-lg">AI Trading Goals</h3>
       </div>
       
-      <p className="text-[#9ca3af] text-sm">
-        Your wallet is connected and ready for live trading on Avantis. Configure your trading parameters and start your first session.
-      </p>
-      
-        <div className="space-y-3">
+        <div className="space-y-4">
         {/* Only show input fields when no active positions */}
         {!hasActivePositions && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <>
+            {/* Target Profit (Percent) */}
             <div>
               <label className="block text-[#9ca3af] text-xs font-medium mb-1">
-                Target Profit (USD)
+                Target Profit* (% of investment)
               </label>
-              <Input
-                type="number"
-                value={targetProfit}
-                onChange={(e) => setTargetProfit(e.target.value)}
-                className="bg-[#2a2a2a] border-[#444] text-white text-sm"
-                placeholder="20"
-              />
+              <div className="relative">
+                <Input
+                  type="number"
+                  value={targetProfitPercent}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    // Allow empty input
+                    if (value === "") {
+                      setTargetProfitPercent("")
+                      setTargetProfit("")
+                      return
+                    }
+
+                    let pct = parseFloat(value)
+                    if (isNaN(pct) || pct < 0) {
+                      setTargetProfitPercent(value)
+                      return
+                    }
+
+                    // Clamp to 0-100%
+                    if (pct > 100) pct = 100
+                    setTargetProfitPercent(pct.toString())
+
+                    const investmentVal = parseFloat(investmentAmount)
+                    if (investmentVal > 0) {
+                      const amount = (pct / 100) * investmentVal
+                      setTargetProfit(amount.toFixed(2))
+                    } else {
+                      setTargetProfit("")
+                    }
+                  }}
+                  className={`bg-[#2a2a2a] border-[#444] text-white text-sm pr-12 ${
+                    isTargetProfitTooHigh ? "border-red-500" : ""
+                  }`}
+                  placeholder="20"
+                  min={0}
+                  max={100}
+                />
+                <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-[#9ca3af] text-sm">%</span>
+              </div>
             </div>
             
+            {/* Investment Amount */}
             <div>
               <label className="block text-[#9ca3af] text-xs font-medium mb-1">
-                Investment Amount (USD)
+                Investment Amount*
               </label>
-              <Input
-                type="number"
-                value={investmentAmount}
-                onChange={(e) => setInvestmentAmount(e.target.value)}
-                className={`bg-[#2a2a2a] border-[#444] text-white text-sm ${
-                  (isInvestmentBelowMin || isInvestmentAboveMax) ? 'border-red-500' : ''
-                }`}
-                placeholder="50"
-                min={MIN_INVESTMENT}
-                max={MAX_INVESTMENT > 0 ? MAX_INVESTMENT : undefined}
-              />
+              <div className="relative">
+                <Input
+                  type="number"
+                  value={investmentAmount}
+                  onChange={(e) => setInvestmentAmount(e.target.value)}
+                  className={`bg-[#2a2a2a] border-[#444] text-white text-sm pr-12 ${
+                    (isInvestmentBelowMin || isInvestmentAboveMax) ? 'border-red-500' : ''
+                  }`}
+                  placeholder="50"
+                  min={MIN_INVESTMENT}
+                  max={MAX_INVESTMENT > 0 ? MAX_INVESTMENT : undefined}
+                />
+                <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-[#9ca3af] text-sm">USD</span>
+              </div>
             </div>
-          </div>
+            
+            {/* Loss Threshold */}
+            <div>
+              <label className="block text-[#9ca3af] text-xs font-medium mb-1">
+                Loss Threshold
+              </label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  value={lossThreshold}
+                  onChange={(e) => setLossThreshold(e.target.value)}
+                  className="bg-[#2a2a2a] border-[#444] text-white text-sm pr-20"
+                  placeholder="10"
+                  min="5"
+                  max="25"
+                />
+                <div className="absolute right-3 top-1/2 transform -translate-y-1/2 flex items-center gap-2">
+                  <div className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = parseInt(lossThreshold) || 10;
+                        if (current < 25) setLossThreshold((current + 1).toString());
+                      }}
+                      className="text-[#9ca3af] hover:text-white text-xs leading-none h-2 flex items-center"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = parseInt(lossThreshold) || 10;
+                        if (current > 5) setLossThreshold((current - 1).toString());
+                      }}
+                      className="text-[#9ca3af] hover:text-white text-xs leading-none h-2 flex items-center"
+                    >
+                      ▼
+                    </button>
+                  </div>
+                  <span className="text-[#9ca3af] text-sm">%</span>
+                </div>
+              </div>
+            </div>
+            
+            {/* Max No. of Positions */}
+            <div>
+              <label className="block text-[#9ca3af] text-xs font-medium mb-2">
+                Max No. of Positions
+              </label>
+              <div className="space-y-2">
+                <Input
+                  type="number"
+                  value={maxPositions}
+                  onChange={(e) => setMaxPositions(e.target.value)}
+                  className="bg-[#2a2a2a] border-[#444] text-white text-sm"
+                  placeholder="1"
+                  min="1"
+                  max="10"
+                />
+                <div className="flex gap-2">
+                  {[1, 3, 5, 10].map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setMaxPositions(num.toString())}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        maxPositions === num.toString()
+                          ? 'bg-[#8759ff] text-white'
+                          : 'bg-[#2a2a2a] text-[#9ca3af] hover:bg-[#374151]'
+                      }`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
         )}
         
-        {/* Investment Amount Validation Messages */}
+        {/* Validation & Helper Messages */}
         {!hasActivePositions && (
           <>
+            {/* Target profit vs investment validation */}
+            {isTargetProfitTooHigh && (
+              <div className="text-red-400 text-xs flex items-center gap-1">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                Target profit cannot exceed 100% of the investment amount.
+              </div>
+            )}
+            
+            {/* Investment Amount Validation Messages */}
             
             {isInvestmentBelowMin && !isBalanceTooLow && (
               <div className="text-red-400 text-xs flex items-center gap-1">
@@ -469,78 +569,6 @@ const TradingCard = ({
           </>
         )}
         
-        {/* Advance Settings Button */}
-        {!hasActivePositions && (
-          <div className="flex justify-end">
-            <button
-              onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
-              className="text-[#8759ff] hover:text-[#7C3AED] text-sm font-medium transition-colors"
-            >
-              {showAdvancedSettings ? 'Hide' : 'Advance setting'}
-            </button>
-          </div>
-        )}
-        
-        {/* Advanced Settings Panel */}
-        {!hasActivePositions && showAdvancedSettings && (
-          <div className="space-y-3 p-4 bg-[#1f2937] border border-[#374151] rounded-lg">
-            <div>
-              <label className="block text-[#9ca3af] text-xs font-medium mb-1">
-                Loss Threshold
-              </label>
-              <div className="relative">
-                <select
-                  value={lossThreshold}
-                  onChange={(e) => setLossThreshold(e.target.value)}
-                  className="w-full bg-[#2a2a2a] border-[#444] text-white text-sm rounded-md px-3 py-2 appearance-none cursor-pointer"
-                >
-                  <option value="5">5%</option>
-                  <option value="10">10%</option>
-                  <option value="15">15%</option>
-                  <option value="20">20%</option>
-                  <option value="25">25%</option>
-                </select>
-                <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
-                  <svg width="12" height="8" viewBox="0 0 12 8" fill="none" className="text-[#9ca3af]">
-                    <path d="M1 1L6 6L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                </div>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-[#9ca3af] text-xs font-medium mb-2">
-                Max No. of Positions
-              </label>
-              <div className="space-y-2">
-                <Input
-                  type="number"
-                  value={maxPositions}
-                  onChange={(e) => setMaxPositions(e.target.value)}
-                  className="bg-[#2a2a2a] border-[#444] text-white text-sm"
-                  placeholder="3"
-                  min="1"
-                  max="10"
-                />
-                <div className="flex gap-2">
-                  {[1, 3, 5, 10].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => setMaxPositions(num.toString())}
-                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        maxPositions === num.toString()
-                          ? 'bg-[#8759ff] text-white'
-                          : 'bg-[#2a2a2a] text-[#9ca3af] hover:bg-[#374151]'
-                      }`}
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
         
         {/* Show active positions info when positions exist */}
         {hasActivePositions && (
@@ -567,21 +595,23 @@ const TradingCard = ({
             isTrading || 
             positionsLoading || 
             (!hasActivePositions && (
-              !targetProfit || 
+              isTargetProfitTooHigh ||
+              !targetProfitPercent || 
               !investmentAmount || 
-              parseFloat(targetProfit) <= 0 || 
+              parseFloat(targetProfitPercent) <= 0 || 
+              parseFloat(targetProfitPercent) > 100 ||
               !isInvestmentValid
             ))
           }
           className="w-full bg-[#8759ff] hover:bg-[#7C3AED] text-white font-semibold py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isTrading ? '🔄 Starting...' : hasActivePositions ? '👁️ View Trades' : '🚀 Start Trading'}
+          {isTrading ? 'Starting...' : hasActivePositions ? 'View Trades' : 'Start Trading'}
         </Button>
         
         {/* Show helpful message when no funds and no trading wallet exists yet (first time) */}
         {avantisBalance === 0 && !tradingWalletAddress && (
           <div className="mt-4 p-4 bg-yellow-900/20 border border-yellow-500 rounded-xl">
-            <h4 className="text-yellow-400 font-semibold mb-2">💰 Add Funds to Start Trading</h4>
+            <h4 className="text-yellow-400 font-semibold mb-2">Add Funds to Start Trading</h4>
             <p className="text-yellow-300 text-sm mb-3">
               Your trading balance is $0.00. Deposit funds from your Base wallet into your PrepX trading vault to start trading.
             </p>
@@ -952,12 +982,12 @@ const WalletInfoCard = ({
           {/* Only show loading during the INITIAL fetch, not repeatedly */}
           {isFetching && !hasAttemptedFetch ? (
             <div className="p-3 bg-blue-900/20 border border-blue-500/50 rounded">
-              <p className="text-blue-400 text-sm font-semibold mb-1">🔄 Loading trading wallet...</p>
+              <p className="text-blue-400 text-sm font-semibold mb-1">Loading trading wallet...</p>
               <p className="text-blue-300 text-xs">Checking for existing wallet...</p>
             </div>
           ) : tradingWalletAddress ? (
             <div className="p-3 bg-yellow-900/20 border border-yellow-500/50 rounded">
-              <p className="text-yellow-400 text-xs font-semibold mb-1">⚠️ Trading Wallet Address Found</p>
+              <p className="text-yellow-400 text-xs font-semibold mb-1">Trading Wallet Address Found</p>
               <p className="text-yellow-300 text-xs break-all font-mono">{tradingWalletAddress}</p>
               <p className="text-yellow-300 text-xs mt-1">Balance: ${avantisBalance.toFixed(2)}</p>
             </div>
@@ -966,7 +996,7 @@ const WalletInfoCard = ({
               <p className="text-[#9ca3af] text-sm">💡 No trading wallet yet. Make your first deposit to create one automatically.</p>
               {fetchError && (
                 <div className="p-3 bg-red-900/20 border border-red-500/50 rounded">
-                  <p className="text-red-400 text-xs font-semibold mb-1">❌ Error:</p>
+                  <p className="text-red-400 text-xs font-semibold mb-1">Error:</p>
                   <p className="text-red-300 text-xs">{fetchError}</p>
                 </div>
               )}
@@ -1028,7 +1058,7 @@ const WalletInfoCard = ({
         {/* Only show loading if actively fetching (not just isLoading from parent) */}
         {isFetching ? (
           <div className="p-3 bg-blue-900/20 border border-blue-500/50 rounded">
-            <p className="text-blue-400 text-xs font-semibold mb-1">🔄 Refreshing wallet data...</p>
+            <p className="text-blue-400 text-xs font-semibold mb-1">Refreshing wallet data...</p>
             <p className="text-blue-300 text-xs">Please wait while we fetch the latest balance</p>
           </div>
         ) : null}
@@ -1296,13 +1326,17 @@ const HoldingsSection = ({ holdings }: { holdings: Array<{
 export default function HomePage() {
   const { user, token } = useAuth()
   const [isBalanceVisible, setIsBalanceVisible] = useState(true)
-  const [targetProfit, setTargetProfit] = useState("")
+  const [targetProfit, setTargetProfit] = useState("") // Internal: calculated from percent for trading
+  const [targetProfitPercent, setTargetProfitPercent] = useState("")
   const [investmentAmount, setInvestmentAmount] = useState("")
   const [isDepositing, setIsDepositing] = useState(false)
   const [depositError, setDepositError] = useState<string | null>(null)
   const [recentDepositHash, setRecentDepositHash] = useState<string | null>(null)
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false)
   const hasRefreshedForTxRef = useRef<Set<string>>(new Set()) // Track which tx hashes we've already refreshed for
+  
+  // Tab state for Positions/Balances/Trade History
+  const [activeTab, setActiveTab] = useState<'positions' | 'balances' | 'tradeHistory'>('positions')
   
   // Withdraw modal state
   const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false)
@@ -1873,20 +1907,7 @@ export default function HomePage() {
 
           {/* Portfolio Balance Card */}
           {!isConnected ? (
-            <WalletSetupCard 
-              isLoading={isLoading} 
-              error={error} 
-              onRetry={async () => {
-                // For web users, try refreshing wallets first (wallet should already exist)
-                if (user?.webUserId) {
-                  await refreshWallets();
-                } else {
-                  // For Farcaster users, create wallet
-                  await createWallet('ethereum');
-                }
-              }}
-              hasExistingWallet={allWallets && allWallets.length > 0}
-            />
+            <BalanceSkeleton />
           ) : (
             isLoading && avantisBalance === 0 && !((positionData?.openPositions ?? 0) > 0) ? (
               <BalanceSkeleton />
@@ -2113,6 +2134,8 @@ export default function HomePage() {
             <TradingCard
               targetProfit={targetProfit}
               setTargetProfit={setTargetProfit}
+              targetProfitPercent={targetProfitPercent}
+              setTargetProfitPercent={setTargetProfitPercent}
               investmentAmount={investmentAmount}
               setInvestmentAmount={setInvestmentAmount}
               primaryWallet={primaryWallet}
@@ -2129,6 +2152,140 @@ export default function HomePage() {
               onViewTrades={handleViewTrades}
               isRefreshingBalance={isRefreshingBalance}
             />
+          )}
+
+          {/* Positions, Balances & Trade History Tabs - Always visible when connected */}
+          {isConnected && (
+            <Card className="bg-[#1a1a1a] border-[#262626] rounded-2xl overflow-hidden">
+              {/* Tabs */}
+              <div className="flex border-b border-[#262626] overflow-x-auto">
+                <button
+                  onClick={() => setActiveTab('positions')}
+                  className={`px-4 sm:px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap border-b-2 ${
+                    activeTab === 'positions'
+                      ? 'text-[#8759ff] border-[#8759ff]'
+                      : 'text-[#9ca3af] border-transparent hover:text-white'
+                  }`}
+                >
+                  Positions
+                </button>
+                <button
+                  onClick={() => setActiveTab('balances')}
+                  className={`px-4 sm:px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap border-b-2 ${
+                    activeTab === 'balances'
+                      ? 'text-[#8759ff] border-[#8759ff]'
+                      : 'text-[#9ca3af] border-transparent hover:text-white'
+                  }`}
+                >
+                  Balances
+                </button>
+                <button
+                  onClick={() => setActiveTab('tradeHistory')}
+                  className={`px-4 sm:px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap border-b-2 ${
+                    activeTab === 'tradeHistory'
+                      ? 'text-[#8759ff] border-[#8759ff]'
+                      : 'text-[#9ca3af] border-transparent hover:text-white'
+                  }`}
+                >
+                  Trade History
+                </button>
+              </div>
+
+              {/* Tab Content - Scrollable */}
+              <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
+                {/* Positions Tab - Always visible */}
+                {activeTab === 'positions' && (
+                  <div className="p-4 sm:p-6">
+                    <PositionsTable
+                      positions={positionData?.positions || []}
+                      isLoading={positionsLoading}
+                      onClosePosition={handleClosePosition}
+                    />
+                  </div>
+                )}
+
+                {/* Balances Tab */}
+                {activeTab === 'balances' && (
+                  <div className="p-4 sm:p-6">
+                    <div className="space-y-4">
+                      <div>
+                        <h3 className="text-white font-semibold text-lg mb-4">Account Balances</h3>
+                        <div className="space-y-3">
+                          <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-[#9ca3af] text-sm">Trading Balance</span>
+                              <span className="text-white font-semibold">${avantisBalance.toFixed(2)}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[#9ca3af] text-sm">Available</span>
+                              <span className="text-white">${avantisBalance.toFixed(2)}</span>
+                            </div>
+                          </div>
+                          {ethBalanceFormatted && parseFloat(ethBalanceFormatted.replace(/[^0-9.]/g, '')) > 0 && (
+                            <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[#9ca3af] text-sm">ETH Balance</span>
+                                <span className="text-white font-semibold">{ethBalanceFormatted}</span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-[#9ca3af] text-sm">Wallet</span>
+                                <span className="text-white text-xs font-mono">
+                                  {tradingWalletAddress ? `${tradingWalletAddress.slice(0, 6)}...${tradingWalletAddress.slice(-4)}` : 'N/A'}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Trade History Tab */}
+                {activeTab === 'tradeHistory' && (
+                  <div className="p-4 sm:p-6">
+                    <div className="space-y-4">
+                      <div>
+                        <h3 className="text-white font-semibold text-lg mb-4">Trade History</h3>
+                        {tradingSession && tradingSession.status === 'running' ? (
+                          <div className="space-y-3">
+                            <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[#9ca3af] text-sm">Session ID</span>
+                                <span className="text-white font-mono text-xs">
+                                  {tradingSession.sessionId?.slice(-8) || 'N/A'}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[#9ca3af] text-sm">Status</span>
+                                <span className="text-[#27c47d] font-semibold">Running</span>
+                              </div>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[#9ca3af] text-sm">Total PnL</span>
+                                <span className={`font-semibold ${(positionData?.totalPnL || tradingSession?.totalPnL || 0) >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'}`}>
+                                  ${(positionData?.totalPnL || tradingSession?.totalPnL || 0).toFixed(2)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-[#9ca3af] text-sm">Open Positions</span>
+                                <span className="text-white font-semibold">
+                                  {positionData?.openPositions || tradingSession?.openPositions || 0}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-8 text-center">
+                            <p className="text-[#9ca3af] text-sm">No trade history available</p>
+                            <p className="text-[#666] text-xs mt-2">Your completed trades will appear here</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Card>
           )}
 
           {/* Wallet Info Section - Show backend trading wallet */}

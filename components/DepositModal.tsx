@@ -155,7 +155,7 @@ export function DepositModal({
               className="w-full p-3 flex items-center justify-between hover:bg-[#1a1a1a] transition-colors"
             >
               <div className="flex items-center space-x-2">
-                <span className="text-white text-sm font-medium">💼 Your Available Funds</span>
+                <span className="text-white text-sm font-medium">Your Available Funds</span>
                 <span className="text-[#9ca3af] text-xs">Farcaster Wallet</span>
               </div>
               <svg 
@@ -226,7 +226,7 @@ export function DepositModal({
                   : 'border-[#374151] text-[#9ca3af] hover:border-[#4b5563] hover:text-white'
               }`}
             >
-              💵 USDC
+              USDC
             </button>
             <button
               onClick={() => setDepositAsset('ETH')}
@@ -236,7 +236,7 @@ export function DepositModal({
                   : 'border-[#374151] text-[#9ca3af] hover:border-[#4b5563] hover:text-white'
               }`}
             >
-              ⟠ ETH
+              ETH
             </button>
           </div>
         </div>
@@ -297,7 +297,7 @@ export function DepositModal({
             if (exceedsBalance) {
               return (
                 <p className="text-xs text-red-400 mt-1">
-                  ⚠️ Amount too high. You need {GAS_RESERVE_ETH.toFixed(4)} ETH for gas. Max: {maxAllowed.toFixed(6)} ETH
+                  Amount too high. You need {GAS_RESERVE_ETH.toFixed(4)} ETH for gas. Max: {maxAllowed.toFixed(6)} ETH
                 </p>
               )
             }
@@ -348,14 +348,14 @@ export function DepositModal({
               <span>Processing...</span>
             </span>
           ) : (
-            `⚡ Deposit ${depositAmount || '—'} ${depositAsset}`
+            `Deposit ${depositAmount || '—'} ${depositAsset}`
           )}
         </Button>
 
         {/* Success Message */}
         {hasSuccessfulDeposit && recentDepositHash && (
           <div className="bg-green-900/20 border border-green-500/50 rounded-lg p-3 space-y-2">
-            <p className="text-green-400 text-sm font-semibold">✅ Deposit Successful!</p>
+            <p className="text-green-400 text-sm font-semibold">Deposit Successful!</p>
             <p className="text-green-300 text-xs">
               Your deposit has been initiated. Funds will appear once the transaction confirms.
             </p>
@@ -373,7 +373,7 @@ export function DepositModal({
         {/* Error Message */}
         {depositError && (
           <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-3">
-            <p className="text-red-400 text-sm font-semibold">❌ Deposit Failed</p>
+            <p className="text-red-400 text-sm font-semibold">Deposit Failed</p>
             <p className="text-red-300 text-xs mt-1">{depositError}</p>
           </div>
         )}
