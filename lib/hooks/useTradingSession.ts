@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useTrading } from './useTrading';
 import { usePositions } from './usePositions';
 import { useTradingFee } from './useTradingFee';
@@ -35,6 +35,9 @@ export function useTradingSession() {
   const [tradingSession, setTradingSession] = useState<TradingSessionState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feePaidTime, setFeePaidTime] = useState<Date | null>(null);
+  const [positionWarning, setPositionWarning] = useState<string | null>(null);
+  const [feePending, setFeePending] = useState<{ amount: number; paid: boolean } | null>(null);
 
   // Refresh session status from API - also tries to restore session if not in state
   const refreshSessionStatus = useCallback(async (forceRestore: boolean = false) => {
@@ -137,38 +140,20 @@ export function useTradingSession() {
     setError(null);
 
     try {
-      // Get the trading amount for fee calculation
+      // Get the trading amount for fee calculation (will be paid after position opens)
       const tradingAmount = config.maxBudget || config.investmentAmount || 50;
       
-      // Step 1: Pay 1% trading fee to platform (1% of trading amount)
-      onProgress?.('fee', `Paying 1% trading fee ($${(tradingAmount * 0.01).toFixed(2)})...`);
-      console.log(`[useTradingSession] Paying trading fee: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
-      const feeResult = await payTradingFee(tradingAmount);
-      
-      if (!feeResult.success) {
-        throw new Error(feeResult.error || 'Failed to pay trading fee');
-      }
-      
-      onProgress?.('fee', `✅ Fee paid: ${feeResult.amount} ${feeResult.currency}`);
-      console.log(`[useTradingSession] Fee paid successfully: ${feeResult.amount} ${feeResult.currency} (tx: ${feeResult.transactionHash})`);
+      // Note: Fee will be paid AFTER first position is successfully opened
+      onProgress?.('fee', `Fee ($${(tradingAmount * 0.01).toFixed(2)}) will be deducted after position opens`);
+      console.log(`[useTradingSession] Fee will be paid after position opens: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
 
-      // Step 2: Refresh balances after fee payment (non-blocking)
-      onProgress?.('balance', 'Updating balances...');
-      refreshBalances(true).then(() => {
-        console.log('[useTradingSession] Balances refreshed after fee payment');
-        onProgress?.('balance', '✅ Balances updated');
-      }).catch((refreshError) => {
-        console.warn('[useTradingSession] Failed to refresh balances after fee payment:', refreshError);
-        // Don't fail the trading start if balance refresh fails
-      });
-
-      // Step 3: Calculate leverage based on balance if not specified
+      // Step 1: Calculate leverage based on balance if not specified
       const budget = config.maxBudget || config.investmentAmount || 50;
       const calculatedLeverage = config.leverage 
         ? config.leverage 
         : calculateLeverageFromBalance(budget, config.leverage);
       
-      // Step 4: Start trading session (this should return quickly)
+      // Step 2: Start trading session (this should return quickly)
       onProgress?.('session', 'Starting trading session...');
       
       try {
@@ -202,7 +187,14 @@ export function useTradingSession() {
         };
 
         setTradingSession(sessionState);
-        onProgress?.('complete', '✅ Trading session ready!');
+        
+        // Store fee amount to be paid after position opens
+        setFeePending({ amount: tradingAmount, paid: false });
+        setFeePaidTime(null);
+        setPositionWarning(null);
+        
+        onProgress?.('complete', '✅ Trading session ready! Fee will be deducted when first position opens.');
+        
         return session.id;
       } catch (sessionError) {
         throw sessionError;
@@ -235,20 +227,71 @@ export function useTradingSession() {
     }
   }, [tradingSession, stopTradingAPI]);
 
+  // Pay fee when first position opens
+  const payFeeOnPositionOpen = useCallback(async (tradingAmount: number) => {
+    if (feePending?.paid) {
+      return; // Fee already paid
+    }
+
+    try {
+      console.log(`[useTradingSession] Position opened! Paying fee: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
+      const feeResult = await payTradingFee(tradingAmount);
+      
+      if (feeResult.success) {
+        setFeePending(prev => prev ? { ...prev, paid: true } : null);
+        setFeePaidTime(new Date());
+        setPositionWarning(null);
+        console.log(`[useTradingSession] ✅ Fee paid successfully after position opened: ${feeResult.amount} ${feeResult.currency} (tx: ${feeResult.transactionHash})`);
+        
+        // Refresh balances after fee payment
+        refreshBalances(true).catch((refreshError) => {
+          console.warn('[useTradingSession] Failed to refresh balances after fee payment:', refreshError);
+        });
+      } else {
+        console.error(`[useTradingSession] ❌ Failed to pay fee after position opened: ${feeResult.error}`);
+        setPositionWarning(`⚠️ Position opened but fee payment failed: ${feeResult.error}`);
+      }
+    } catch (error) {
+      console.error(`[useTradingSession] ❌ Error paying fee after position opened:`, error);
+      setPositionWarning(`⚠️ Position opened but fee payment error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [feePending, payTradingFee, refreshBalances]);
+
+  // Track previous position count to detect new positions
+  const previousPositionCountRef = useRef<number>(0);
+
   // Update session with position data
   useEffect(() => {
     if (tradingSession && positionData) {
+      const previousPositions = previousPositionCountRef.current;
+      const currentPositions = positionData.openPositions || 0;
+      
       setTradingSession(prev => prev ? {
         ...prev,
         sessionId: prev.sessionId || prev.id, // Preserve sessionId when updating
         totalPnL: positionData.totalPnL || 0,
         pnl: positionData.totalPnL || 0,
-        openPositions: positionData.openPositions || 0,
-        positions: positionData.openPositions || 0,
+        openPositions: currentPositions,
+        positions: currentPositions,
         cycle: (prev.cycle || 0) + 1
       } : null);
+      
+      // Pay fee when first position opens (transition from 0 to >0)
+      if (currentPositions > 0 && previousPositions === 0 && feePending && !feePending.paid) {
+        const tradingAmount = tradingSession.config?.maxBudget || tradingSession.config?.totalBudget || feePending.amount;
+        console.log(`[useTradingSession] First position opened! Paying fee for amount: $${tradingAmount}`);
+        payFeeOnPositionOpen(tradingAmount);
+      }
+      
+      // Update previous position count
+      previousPositionCountRef.current = currentPositions;
+      
+      // Clear warning if positions opened
+      if (currentPositions > 0 && positionWarning) {
+        setPositionWarning(null);
+      }
     }
-  }, [positionData]); // Removed tradingSession from dependencies to prevent infinite loop
+  }, [positionData, positionWarning, tradingSession, feePending, payFeeOnPositionOpen]);
 
       // Auto-refresh session status periodically
       useEffect(() => {
@@ -264,6 +307,37 @@ export function useTradingSession() {
         return () => clearInterval(interval);
       }, [tradingSession?.id, tradingSession?.status]); // Depend on id and status to prevent unnecessary re-runs
 
+      // Monitor for positions opening (no fee payment needed - fee is paid after position opens)
+      useEffect(() => {
+        if (!tradingSession || tradingSession.status !== 'running' || feePending?.paid) {
+          return;
+        }
+
+        const checkPositions = async () => {
+          await fetchPositions(true);
+          const elapsedSeconds = feePending ? Math.floor((Date.now() - (tradingSession.startTime?.getTime() || Date.now())) / 1000) : 0;
+          
+          // Show status messages while waiting for first position
+          if (positionData?.openPositions === 0 && feePending && !feePending.paid) {
+            if (elapsedSeconds >= 120) {
+              setPositionWarning('⚠️ Still waiting for position to open after 2 minutes. Bot is scanning markets...');
+            } else if (elapsedSeconds >= 60) {
+              setPositionWarning('⏳ Waiting for position to open. Bot is analyzing market conditions...');
+            } else if (elapsedSeconds >= 30) {
+              setPositionWarning('⏳ Bot is scanning markets for entry opportunities...');
+            }
+          } else if (positionData && positionData.openPositions > 0) {
+            setPositionWarning(null);
+          }
+        };
+
+        // Check immediately and then every 15 seconds
+        checkPositions();
+        const interval = setInterval(checkPositions, 15000);
+
+        return () => clearInterval(interval);
+      }, [tradingSession, positionData, fetchPositions, feePending]);
+
   return {
     tradingSession,
     isLoading: isLoading || isPayingFee,
@@ -272,5 +346,8 @@ export function useTradingSession() {
     stopTrading,
     refreshSessionStatus,
     clearSession,
+    feePaidTime,
+    positionWarning,
+    feePending,
   };
 }

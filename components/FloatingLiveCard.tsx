@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { usePositions } from '@/lib/hooks/usePositions'
 import { useTradingSession } from '@/lib/hooks/useTradingSession'
+import { useTradingActivityLogs } from '@/lib/hooks/useTradingActivityLogs'
+import { useIntegratedWallet } from '@/lib/wallet/IntegratedWalletContext'
 import { LiveTradingLogModal } from './LiveTradingLogModal'
 
 interface FloatingLiveCardProps {
@@ -15,7 +17,9 @@ interface FloatingLiveCardProps {
 
 export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: FloatingLiveCardProps) {
   const { positionData } = usePositions()
-  const { tradingSession } = useTradingSession()
+  const { tradingSession, feePending, feePaidTime } = useTradingSession()
+  const { avantisBalance } = useIntegratedWallet()
+  const { logs } = useTradingActivityLogs()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isVisible, setIsVisible] = useState(true)
   
@@ -25,6 +29,10 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
   }
   
   if (!isVisible) return null
+
+  // Get recent activity logs (last 3)
+  const recentLogs = logs.slice(-3)
+  const latestLog = logs[logs.length - 1]
   
   return (
     <>
@@ -37,7 +45,7 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
         }}
         onClick={() => setIsModalOpen(true)}
       >
-        <Card className="bg-[#1a1a1a] border-[#262626] p-3 shadow-2xl hover:shadow-[#8759ff]/20 min-w-[200px]">
+        <Card className="bg-[#1a1a1a] border-[#262626] p-3 shadow-2xl hover:shadow-[#8759ff]/20 min-w-[240px] max-w-[280px]">
           {/* Header */}
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center space-x-2">
@@ -58,13 +66,35 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
           </div>
           
           {/* Bot Status */}
-          <div className="space-y-1.5 text-xs">
+          <div className="space-y-1.5 text-xs mb-2">
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">Session:</span>
               <span className="text-white font-mono">
                 {tradingSession.sessionId?.slice(-6) || 'Active'}
               </span>
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[#9ca3af]">Balance:</span>
+              <span className="text-white font-semibold">
+                ${avantisBalance.toFixed(2)}
+              </span>
+            </div>
+            {feePending && !feePending.paid && (
+              <div className="flex items-center justify-between">
+                <span className="text-[#facc15] text-[10px]">Fee:</span>
+                <span className="text-[#facc15] text-[10px] font-semibold">
+                  ${(feePending.amount * 0.01).toFixed(2)} pending
+                </span>
+              </div>
+            )}
+            {feePaidTime && (
+              <div className="flex items-center justify-between">
+                <span className="text-[#27c47d] text-[10px]">Fee:</span>
+                <span className="text-[#27c47d] text-[10px] font-semibold">
+                  Paid ✓
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">Positions:</span>
               <span className="text-white font-semibold">
@@ -80,15 +110,47 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
               </span>
             </div>
           </div>
-          
-          {/* Recent Activity Indicator */}
+
+          {/* Recent Activity Logs */}
           <div className="mt-2 pt-2 border-t border-[#262626]">
-            <div className="flex items-center space-x-1">
-              <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse"></div>
-              <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-              <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
-              <span className="text-[#9ca3af] text-[10px] ml-1">Monitoring markets</span>
+            <div className="space-y-1.5 max-h-[80px] overflow-y-auto">
+              {recentLogs.length > 0 ? (
+                recentLogs.map((log) => (
+                  <div key={log.id} className="flex items-start space-x-1.5 text-[10px]">
+                    <span className={`mt-0.5 ${
+                      log.type === 'position_success' ? 'text-[#27c47d]' :
+                      log.type === 'position_failed' ? 'text-[#ef4444]' :
+                      log.type === 'indicator' ? 'text-[#8759ff]' :
+                      log.type === 'cycle' ? 'text-[#facc15]' :
+                      'text-[#9ca3af]'
+                    }`}>
+                      {log.type === 'position_success' ? '✅' :
+                       log.type === 'position_failed' ? '❌' :
+                       log.type === 'indicator' ? '📊' :
+                       log.type === 'cycle' ? '🔄' :
+                       '●'}
+                    </span>
+                    <span className="text-[#9ca3af] flex-1 truncate">
+                      {log.message.length > 35 ? log.message.substring(0, 35) + '...' : log.message}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="flex items-center space-x-1">
+                  <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse"></div>
+                  <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                  <span className="text-[#9ca3af] text-[10px] ml-1">Initializing...</span>
+                </div>
+              )}
             </div>
+            {latestLog && (
+              <div className="mt-1.5 pt-1.5 border-t border-[#262626]">
+                <div className="text-[9px] text-[#6b7280] truncate">
+                  {latestLog.message}
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       </div>
