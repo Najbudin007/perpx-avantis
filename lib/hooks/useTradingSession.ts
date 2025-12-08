@@ -175,7 +175,7 @@ export function useTradingSession() {
         const session = await startTradingAPI({
           totalBudget: budget,
           profitGoal: config.profitGoal || config.targetProfit || 10,
-          maxPositions: config.maxPerSession || 3,
+          maxPositions: config.maxPerSession || 1,
           leverage: calculatedLeverage, // Balance-based: $10-20=2x-3x, $20+=5x default
           lossThreshold: config.lossThreshold || 10
         });
@@ -196,7 +196,7 @@ export function useTradingSession() {
           config: {
             profitGoal: config.profitGoal || config.targetProfit || 10,
             maxBudget: config.maxBudget || config.investmentAmount || 50,
-            maxPerSession: config.maxPerSession || 5,
+            maxPerSession: config.maxPerSession || 1,
             totalBudget: config.maxBudget || config.investmentAmount || 50,
           }
         };

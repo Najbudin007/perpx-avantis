@@ -47,7 +47,7 @@ export async function GET(
             config: {
               maxBudget: 50,
               profitGoal: 10,
-              maxPerSession: 5
+              maxPerSession: 1
             },
             error: 'Session not found in trading engine'
           }
@@ -81,7 +81,7 @@ export async function GET(
           config: {
             maxBudget: 50,
             profitGoal: 10,
-            maxPerSession: 5
+            maxPerSession: 1
           }
         }
       })
@@ -100,7 +100,7 @@ export async function GET(
         config: {
           maxBudget: 50,
           profitGoal: 10,
-          maxPerSession: 5
+          maxPerSession: 1
         },
         error: error instanceof Error ? error.message : 'Failed to get trading session'
       }

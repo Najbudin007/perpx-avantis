@@ -477,7 +477,7 @@ app.get('/api/trading/config', (req, res) => {
     const config = {
       defaultMaxBudget: process.env.DEFAULT_MAX_BUDGET || 1000,
       defaultProfitGoal: process.env.DEFAULT_PROFIT_GOAL || 100,
-      defaultMaxPositions: process.env.DEFAULT_MAX_POSITIONS || 5,
+      defaultMaxPositions: process.env.DEFAULT_MAX_POSITIONS || 1,
       minBudget: 10,
       maxBudget: 10000000,
       minPositions: 1,

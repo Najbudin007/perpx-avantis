@@ -62,7 +62,7 @@ export function getDefaultSessionConfig(): SessionConfig {
   // Read from environment variables with fallbacks
   const maxBudget = parseInt(process.env.MAX_BUDGET || '1000', 10);
   const profitGoal = parseInt(process.env.PROFIT_GOAL || '200', 10);
-  const maxPerSession = parseInt(process.env.MAX_PER_SESSION || '5', 10);
+  const maxPerSession = parseInt(process.env.MAX_PER_SESSION || '1', 10);
   
   return {
     maxBudget,

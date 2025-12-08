@@ -47,7 +47,7 @@ async function getUserInputs(): Promise<{ maxBudget: number; profitGoal: number;
   if (process.env.MAX_BUDGET && process.env.PROFIT_GOAL && process.env.MAX_PER_SESSION) {
     const maxBudget = parseFloat(process.env.MAX_BUDGET) || 1000;
     const profitGoal = parseFloat(process.env.PROFIT_GOAL) || 5;
-    const maxPerSession = parseInt(process.env.MAX_PER_SESSION) || 5;
+    const maxPerSession = parseInt(process.env.MAX_PER_SESSION) || 1;
     
     console.log('\n🚀 Hyperliquid Trading Bot Configuration\n');
     console.log(`📊 Budget: $${maxBudget}`);

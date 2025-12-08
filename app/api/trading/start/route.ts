@@ -294,7 +294,7 @@ export async function POST(request: NextRequest) {
     console.log(`[API] [${requestId}] Request payload (private key masked):`, {
       maxBudget: config.totalBudget || config.investmentAmount || config.maxBudget,
       profitGoal: config.profitGoal || config.targetProfit,
-      maxPerSession: config.maxPositions || config.maxPerSession || 3,
+      maxPerSession: config.maxPositions || config.maxPerSession || 1,
       lossThreshold: config.lossThreshold || 10,
       avantisApiWallet: privateKey ? `${privateKey.slice(0, 10)}...${privateKey.slice(-4)}` : 'MISSING',
       userFid: authContext.context === 'farcaster' ? authContext.fid : undefined,
@@ -312,7 +312,7 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           maxBudget: config.totalBudget || config.investmentAmount || config.maxBudget,
           profitGoal: config.profitGoal || config.targetProfit,
-          maxPerSession: config.maxPositions || config.maxPerSession || 3,
+          maxPerSession: config.maxPositions || config.maxPerSession || 1,
           lossThreshold: config.lossThreshold || 10,
           avantisApiWallet: privateKey, // Private key for Avantis trading
           userFid: authContext.context === 'farcaster' ? authContext.fid : undefined, // FID for Farcaster users

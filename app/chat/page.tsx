@@ -176,7 +176,7 @@ export default function ChatPage() {
       startTrading({
           profitGoal: profitNum,
           maxBudget: investmentNum,
-          maxPerSession: maxPositions ? parseInt(maxPositions) : 3,
+          maxPerSession: maxPositions ? parseInt(maxPositions) : 1,
           lossThreshold: lossThreshold ? parseFloat(lossThreshold) : 10
       }, (step, message) => {
         // Show toast for session start
@@ -308,7 +308,7 @@ export default function ChatPage() {
             const sessionId = await startTrading({
               maxBudget: investmentAmount,
               profitGoal: profitGoal,
-              maxPerSession: 5
+              maxPerSession: 1
             })
             
             if (sessionId) {
@@ -1644,7 +1644,7 @@ export default function ChatPage() {
                     await startTrading({
                       profitGoal: profit,
                       maxBudget: investment,
-                      maxPerSession: 5
+                      maxPerSession: 1
                     });
                     
                     // Close the modal

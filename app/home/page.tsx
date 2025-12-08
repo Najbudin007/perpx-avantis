@@ -20,6 +20,8 @@ import { DepositModal } from "@/components/DepositModal"
 import { WalletConnectionModal } from "@/components/WalletConnectionModal"
 import { WithdrawModal } from "@/components/WithdrawModal"
 import { BuildTimestamp } from "@/components/BuildTimestamp"
+import { PositionsTable } from "@/components/PositionsTable"
+import { FloatingLiveCard } from "@/components/FloatingLiveCard"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useBaseAccountTransactions } from "@/lib/services/BaseAccountTransactionService"
@@ -1216,14 +1218,14 @@ const WalletInfoCard = ({
               }
             </p>
             
-            {walletToDisplay.privateKey && (
+            {/* {walletToDisplay.privateKey && (
               <div className="mt-2 p-2 bg-blue-900/20 border border-blue-500/50 rounded">
                 <p className="text-blue-400 text-xs font-semibold mb-1">🔑 MetaMask Connection</p>
                 <p className="text-blue-300 text-xs">
                   You can copy your private key above and import it into MetaMask to connect this wallet externally.
                 </p>
               </div>
-            )}
+            )} */}
             
             {/* Debug Info Section */}
             <div className="mt-3 p-2 bg-[#1f2937] border border-[#374151] rounded text-xs">
@@ -1448,46 +1450,65 @@ export default function HomePage() {
   }, [tradingSession, router]);
   
   // Refresh session status when component mounts or when positions change
-  const { positionData } = usePositions()
+  const { positionData, isLoading: positionsLoading, closePosition } = usePositions()
   
-  // Auto-refresh session status on mount and periodically
-  // NOTE: Only restore sessions if user explicitly started trading (not on page load)
   useEffect(() => {
     if (isConnected) {
-      // Don't auto-restore sessions on mount - only refresh if we already have a session
-      // This prevents errors when trying to restore sessions that don't exist
       if (tradingSession && tradingSession.status === 'running') {
-        // Only refresh existing running sessions
         refreshSessionStatus(false);
       }
       
-      // Set up periodic refresh every 10 seconds ONLY if we have an active running session
       const interval = setInterval(() => {
-        // Only refresh if we have an active running session
         if (tradingSession && tradingSession.status === 'running') {
           refreshSessionStatus(false); // Just refresh existing session
         }
-        // Don't auto-restore sessions - only show if explicitly running
       }, 10000); // Refresh every 10 seconds
       
       return () => clearInterval(interval);
     }
   }, [isConnected, tradingSession?.status, refreshSessionStatus]);
   
-  // Only restore session if we have actual open positions AND no session AND user has balance
-  // This handles the case where positions exist but session state was lost
   useEffect(() => {
     if (isConnected && positionData && positionData.openPositions > 0 && !tradingSession && avantisBalance > 0) {
-      // If we have positions but no session, try to restore it (but only if it's actually running)
-      // Only restore if user has balance (indicates they've started trading)
+
       refreshSessionStatus(true).catch(err => {
-        // Silently fail - don't show errors for session restoration attempts
       });
     } else if (isConnected && !positionData?.openPositions && tradingSession && tradingSession.status !== 'running') {
-      // If no positions and session is not running, clear it
-      // This prevents showing stale sessions
     }
   }, [isConnected, positionData?.openPositions, tradingSession, avantisBalance, refreshSessionStatus]);
+  
+  // Handle closing a position
+  const handleClosePosition = useCallback(async (positionId: string) => {
+    try {
+      addToast({
+        type: 'info',
+        title: 'Closing Position',
+        message: `Closing ${positionId}...`
+      });
+      
+      const success = await closePosition(positionId);
+      
+      if (success) {
+        addToast({
+          type: 'success',
+          title: 'Position Closed',
+          message: `Successfully closed ${positionId}`
+        });
+      } else {
+        addToast({
+          type: 'error',
+          title: 'Close Failed',
+          message: `Failed to close ${positionId}`
+        });
+      }
+    } catch (error) {
+      addToast({
+        type: 'error',
+        title: 'Close Failed',
+        message: error instanceof Error ? error.message : 'Unknown error occurred'
+      });
+    }
+  }, [closePosition, addToast]);
   
   // Fetch active sessions on mount and periodically
   useEffect(() => {
@@ -1543,8 +1564,6 @@ export default function HomePage() {
     }
   }, [user?.fid, user?.webUserId, isLoading, primaryWallet, allWallets, createWallet, refreshWallets, error])
 
-  // NOTE: Automatic post-deposit refresh removed
-  // User must manually click refresh button to update balances after deposit confirms
 
   const handleDeposit = useCallback(
     async ({ amount, asset }: { amount: string; asset: 'USDC' | 'ETH' }) => {
@@ -2079,47 +2098,14 @@ export default function HomePage() {
                 </div>
               </div>
               
-              {/* Real position data from Avantis on-chain */}
+              {/* Positions Table - Shows all positions in a responsive table/card layout */}
               {positionData && positionData.positions && positionData.positions.length > 0 && (
-                <div className="mb-4 space-y-2">
-                  <p className="text-[#b4b4b4] text-xs font-medium">Live Positions on AvantisFi:</p>
-                  {positionData.positions.slice(0, 3).map((position, idx) => (
-                    <div key={idx} className="bg-[#2a2a2a] border border-[#262626] rounded-lg p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center space-x-2">
-                          <span className="text-white font-semibold text-sm">{position.symbol || position.coin}</span>
-                          <span className={`px-2 py-0.5 rounded text-xs ${position.side === 'long' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
-                            {position.side.toUpperCase()}
-                          </span>
-                          <span className="text-[#b4b4b4] text-xs">{position.leverage}x</span>
-                        </div>
-                        <span className={`text-xs font-medium ${(position.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          ${position.pnl ? position.pnl.toFixed(2) : '0.00'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div>
-                          <span className="text-[#b4b4b4]">Entry:</span>
-                          <span className="text-white ml-1">${position.entryPrice ? position.entryPrice.toFixed(2) : '0.00'}</span>
-                        </div>
-                        <div>
-                          <span className="text-[#b4b4b4]">Mark:</span>
-                          <span className="text-white ml-1">${position.markPrice ? position.markPrice.toFixed(2) : '0.00'}</span>
-                        </div>
-                        {position.liquidationPrice && position.liquidationPrice > 0 && (
-                          <div className="col-span-2">
-                            <span className="text-[#b4b4b4]">Liq. Price:</span>
-                            <span className="text-red-400 ml-1">${position.liquidationPrice.toFixed(2)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {positionData.positions.length > 3 && (
-                    <p className="text-[#b4b4b4] text-xs text-center">
-                      +{positionData.positions.length - 3} more position{positionData.positions.length - 3 !== 1 ? 's' : ''}
-                    </p>
-                  )}
+                <div className="mb-4">
+                  <PositionsTable
+                    positions={positionData.positions}
+                    isLoading={positionsLoading}
+                    onClosePosition={handleClosePosition}
+                  />
                 </div>
               )}
               
@@ -2258,6 +2244,9 @@ export default function HomePage() {
           avantisBalance={avantisBalance}
         />
       </div>
+
+      {/* Floating Live Trading Card */}
+      <FloatingLiveCard />
     </ProtectedRoute>
   )
 }
