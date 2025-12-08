@@ -101,9 +101,16 @@ export async function POST(request: NextRequest) {
 
     // If symbol provided, we need to resolve it to pair_index
     // For now, require pair_index directly
-    const pairIndex = pair_index || parseInt(symbol) // Fallback: try parsing symbol as number
+    // Handle pair_index === 0 correctly (0 is a valid pair index)
+    let pairIndex: number | undefined
+    if (pair_index !== undefined && pair_index !== null) {
+      pairIndex = typeof pair_index === 'number' ? pair_index : parseInt(pair_index)
+    } else if (symbol !== undefined && symbol !== null) {
+      pairIndex = parseInt(symbol) // Fallback: try parsing symbol as number
+    }
     
-    if (!pairIndex || isNaN(pairIndex)) {
+    // Explicitly check for undefined, null, or NaN (not falsy, since 0 is valid)
+    if (pairIndex === undefined || pairIndex === null || isNaN(pairIndex)) {
       return NextResponse.json({ 
         error: 'Valid pair_index is required. Please provide the pair_index from the position data.' 
       }, { status: 400 })
