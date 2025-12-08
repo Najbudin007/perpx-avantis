@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
     console.log(`[CloseAllPositions] Closing all positions for ${authContext.context} user:`, userId)
 
     // Use AvantisClient to call backend FastAPI directly
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:3002'
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:8000'
     const avantisClient = new AvantisClient({ 
       baseUrl: avantisApiUrl,
       privateKey: wallet.privateKey 

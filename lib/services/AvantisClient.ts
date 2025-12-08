@@ -97,7 +97,7 @@ export class AvantisClient {
     const baseURL = config.baseUrl || 
       (typeof window !== 'undefined' 
         ? (process.env.NEXT_PUBLIC_AVANTIS_API_URL || '/api/avantis-proxy')
-        : (process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002'));
+        : (process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000'));
     const timeout = config.timeout || 30000;
 
     this.axiosInstance = axios.create({
@@ -436,7 +436,7 @@ export function createAvantisClient(config?: Partial<AvantisConfig>): AvantisCli
   const baseUrl = config?.baseUrl || 
     process.env.NEXT_PUBLIC_AVANTIS_API_URL || 
     process.env.AVANTIS_API_URL || 
-    'http://localhost:3002';
+    'http://localhost:8000';
   
   return new AvantisClient({
     baseUrl,

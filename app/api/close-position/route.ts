@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
     console.log(`[ClosePosition] Closing position with pair_index ${pairIndex} for ${authContext.context} user:`, userId)
 
     // Use AvantisClient to call backend FastAPI directly (direct contract integration)
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:3002'
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:8000'
     const avantisClient = new AvantisClient({ 
       baseUrl: avantisApiUrl,
       privateKey: wallet.privateKey 
