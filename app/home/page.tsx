@@ -22,6 +22,7 @@ import { WithdrawModal } from "@/components/WithdrawModal"
 import { BuildTimestamp } from "@/components/BuildTimestamp"
 import { PositionsTable } from "@/components/PositionsTable"
 import { FloatingLiveCard } from "@/components/FloatingLiveCard"
+import { Modal } from "@/components/ui/modal"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useBaseAccountTransactions } from "@/lib/services/BaseAccountTransactionService"
@@ -217,6 +218,8 @@ const TradingCard = ({
   ethBalanceFormatted = '0',
   onViewTrades,
   isRefreshingBalance = false,
+  addToast,
+  startTradingSession,
 }: {
   targetProfit: string
   setTargetProfit: (value: string) => void
@@ -237,6 +240,14 @@ const TradingCard = ({
   ethBalanceFormatted?: string
   onViewTrades?: () => Promise<void>
   isRefreshingBalance?: boolean
+  addToast: (toast: { type: 'success' | 'error' | 'warning' | 'info'; title: string; message: string }) => void
+  startTradingSession: (config: {
+    investmentAmount?: number;
+    profitGoal?: number;
+    targetProfit?: number;
+    maxPerSession?: number;
+    lossThreshold?: number;
+  }, onProgress?: (step: string, message: string) => void) => Promise<string>
 }) => {
   const [isTrading, setIsTrading] = useState(false)
   const { positionData, isLoading: positionsLoading } = usePositions()
@@ -316,10 +327,27 @@ const TradingCard = ({
   // Check if there are active positions
   const hasActivePositions = positionData && positionData.openPositions > 0
 
+  // Guard against duplicate session starts
+  const isStartingTradingRef = useRef(false)
+  
   const handleStartTrading = async () => {
+    // Guard: Prevent duplicate session starts
+    if (isStartingTradingRef.current || isTrading) {
+      addToast({
+        type: 'warning',
+        title: 'Already Starting',
+        message: 'Trading session is already being started. Please wait...'
+      })
+      return
+    }
+    
     // Validate that both fields are filled
     if (!targetProfitPercent || !investmentAmount) {
-      // You could show an error message here if needed
+      addToast({
+        type: 'error',
+        title: 'Validation Error',
+        message: 'Please fill in both target profit and investment amount.'
+      })
       return;
     }
     
@@ -328,26 +356,83 @@ const TradingCard = ({
     
     // Validate numeric values
     if (isNaN(profitPercentNum) || profitPercentNum <= 0 || profitPercentNum > 100) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Target Profit',
+        message: 'Target profit must be between 0% and 100%.'
+      })
       return;
     }
     
     if (isNaN(investmentNum) || investmentNum <= 0) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Investment',
+        message: 'Investment amount must be greater than 0.'
+      })
       return;
     }
 
     // Calculate target profit USD from percent (already validated to be <= 100%)
     const profitNum = (profitPercentNum / 100) * investmentNum;
     
-    // Redirect to chat page with trading parameters
-    const params = new URLSearchParams({
-      profit: profitNum.toString(),
-      investment: investmentAmount,
-      mode: 'real', // Use real trading mode
-      lossThreshold: lossThreshold,
-      maxPositions: maxPositions
-    })
+    // Set guard flag
+    isStartingTradingRef.current = true
+    setIsTrading(true)
     
-    router.push(`/chat?${params.toString()}`)
+    try {
+      addToast({
+        type: 'info',
+        title: 'Starting Trading',
+        message: 'Initializing trading session...'
+      })
+      
+      // Start trading session with progress callbacks
+      await startTradingSession({
+        investmentAmount: investmentNum,
+        profitGoal: profitNum,
+        targetProfit: profitNum,
+        maxPerSession: parseInt(maxPositions) || 1,
+        lossThreshold: parseFloat(lossThreshold) || 10
+      }, (step: string, message: string) => {
+        // Show progress updates via toast
+        if (step === 'fee') {
+          addToast({
+            type: 'info',
+            title: 'Processing Fee',
+            message: message
+          })
+        } else if (step === 'session') {
+          addToast({
+            type: 'info',
+            title: 'Starting Session',
+            message: message
+          })
+        } else if (step === 'complete') {
+          addToast({
+            type: 'success',
+            title: 'Trading Started',
+            message: 'Your trading session is now active!'
+          })
+        }
+      })
+      
+      // Clear form after successful start
+      setTargetProfitPercent('')
+      setInvestmentAmount('')
+      setTargetProfit('')
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to start trading'
+      addToast({
+        type: 'error',
+        title: 'Trading Start Failed',
+        message: errorMessage
+      })
+    } finally {
+      setIsTrading(false)
+      isStartingTradingRef.current = false
+    }
   }
 
 
@@ -1372,8 +1457,11 @@ export default function HomePage() {
 
   const { isLoading: isTradingLoading, error: tradingError, getTradingSessions } = useTrading()
   const { totalProfits } = useTradingProfits()
-  const { tradingSession, refreshSessionStatus } = useTradingSession()
+  const { tradingSession, refreshSessionStatus, startTrading: startTradingSession } = useTradingSession()
   const router = useRouter()
+  
+  // Modal state for viewing positions
+  const [isPositionsModalOpen, setIsPositionsModalOpen] = useState(false)
   
   // State for active sessions list
   const [activeSessions, setActiveSessions] = useState<Array<{
@@ -1389,57 +1477,143 @@ export default function HomePage() {
   const { signAndSendTransaction, waitForTransaction, isAvailable: isBaseTxAvailable, estimateGas } = useBaseAccountTransactions()
   const { sdk: baseSdk } = useBaseMiniApp()
   
-  // Handle viewing trades - check for active session
-  const handleViewTrades = useCallback(async () => {
-    // Check if there's an active session first
-    if (tradingSession && tradingSession.status === 'running') {
-      const params = new URLSearchParams({
-        mode: 'real',
-        view: 'positions',
-        sessionId: tradingSession.sessionId
-      });
-      router.push(`/chat?${params.toString()}`);
-    } else {
-      // Redirect to chat page to view ongoing trades
-      const params = new URLSearchParams({
-        mode: 'real',
-        view: 'positions' // Add a parameter to indicate we're viewing positions
-      });
-      router.push(`/chat?${params.toString()}`);
-    }
-  }, [tradingSession, router]);
-  
   // Refresh session status when component mounts or when positions change
   const { positionData, isLoading: positionsLoading, closePosition } = usePositions()
   
-  useEffect(() => {
-    if (isConnected) {
-      if (tradingSession && tradingSession.status === 'running') {
-        refreshSessionStatus(false);
-      }
-      
-      const interval = setInterval(() => {
-        if (tradingSession && tradingSession.status === 'running') {
-          refreshSessionStatus(false); // Just refresh existing session
-        }
-      }, 10000); // Refresh every 10 seconds
-      
-      return () => clearInterval(interval);
+  // Handle viewing trades - show positions in modal
+  const handleViewTrades = useCallback(async () => {
+    if (positionData && positionData.openPositions > 0) {
+      setIsPositionsModalOpen(true)
+    } else {
+      addToast({
+        type: 'info',
+        title: 'No Active Positions',
+        message: 'You don\'t have any open positions at the moment.'
+      })
     }
+  }, [positionData, addToast]);
+  
+  useEffect(() => {
+    if (!isConnected) return
+    
+    // Initial refresh
+    if (tradingSession && tradingSession.status === 'running') {
+      refreshSessionStatus(false);
+    }
+    
+    // Set up polling interval
+    const interval = setInterval(() => {
+      if (tradingSession && tradingSession.status === 'running') {
+        refreshSessionStatus(false); // Just refresh existing session
+      }
+    }, 10000); // Refresh every 10 seconds
+    
+    // Cleanup: Clear interval on unmount or dependency change
+    return () => {
+      clearInterval(interval);
+    };
   }, [isConnected, tradingSession?.status, refreshSessionStatus]);
   
   useEffect(() => {
-    if (isConnected && positionData && positionData.openPositions > 0 && !tradingSession && avantisBalance > 0) {
-
-      refreshSessionStatus(true).catch(err => {
-      });
-    } else if (isConnected && !positionData?.openPositions && tradingSession && tradingSession.status !== 'running') {
+    if (!isConnected) return
+    
+    let timeoutId: NodeJS.Timeout | null = null
+    
+    if (positionData && positionData.openPositions > 0 && !tradingSession && avantisBalance > 0) {
+      // Restore session if positions exist but no session
+      timeoutId = setTimeout(() => {
+        refreshSessionStatus(true).catch(err => {
+          // Silent error handling
+        });
+      }, 1000); // Small delay to avoid race conditions
+    } else if (!positionData?.openPositions && tradingSession && tradingSession.status !== 'running') {
+      // Clean up session if no positions and session not running
     }
+    
+    // Cleanup: Clear timeout on unmount or dependency change
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [isConnected, positionData?.openPositions, tradingSession, avantisBalance, refreshSessionStatus]);
   
-  // Handle closing a position
+  // Transaction status polling with timeout
+  const pollTransactionStatus = useCallback((
+    txHash: string,
+    timeout: number = 60000, // 60 seconds default
+    onConfirmed?: () => void,
+    onTimeout?: () => void
+  ) => {
+    const startTime = Date.now()
+    const pollInterval = 3000 // Poll every 3 seconds
+    let pollTimer: NodeJS.Timeout | null = null
+    let isCleanedUp = false
+    
+    const poll = async () => {
+      if (isCleanedUp) return false
+      
+      try {
+        const explorerBaseUrl = process.env.NEXT_PUBLIC_AVANTIS_NETWORK === 'base-mainnet'
+          ? 'https://basescan.org'
+          : 'https://sepolia.basescan.org'
+        
+        const response = await fetch(`${explorerBaseUrl}/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}`)
+        const data = await response.json()
+        
+        if (data.status === '1' && data.result?.status === '1') {
+          // Transaction confirmed
+          if (pollTimer) clearInterval(pollTimer)
+          pollTimer = null
+          onConfirmed?.()
+          return true
+        }
+        
+        // Check timeout
+        if (Date.now() - startTime > timeout) {
+          if (pollTimer) clearInterval(pollTimer)
+          pollTimer = null
+          onTimeout?.()
+          return false
+        }
+        
+        return false
+      } catch (error) {
+        // Continue polling on error
+        return false
+      }
+    }
+    
+    // Start polling
+    pollTimer = setInterval(async () => {
+      const confirmed = await poll()
+      if (confirmed && pollTimer) {
+        clearInterval(pollTimer)
+        pollTimer = null
+      }
+    }, pollInterval)
+    
+    // Initial poll (non-blocking)
+    poll().catch(() => {
+      // Ignore initial poll errors
+    })
+    
+    // Return cleanup function
+    return () => {
+      isCleanedUp = true
+      if (pollTimer) {
+        clearInterval(pollTimer)
+        pollTimer = null
+      }
+    }
+  }, [])
+  
+  // Handle closing a position with optimistic update
   const handleClosePosition = useCallback(async (positionId: string) => {
+    // Optimistic update: Store previous state
+    const previousPositions = positionData?.positions || []
+    const previousOpenPositions = positionData?.openPositions || 0
+    
     try {
+      // Optimistic UI update
       addToast({
         type: 'info',
         title: 'Closing Position',
@@ -1455,43 +1629,63 @@ export default function HomePage() {
           message: `Successfully closed ${positionId}`
         });
       } else {
+        // Rollback: Position close failed
         addToast({
           type: 'error',
           title: 'Close Failed',
-          message: `Failed to close ${positionId}`
+          message: `Failed to close ${positionId}. Please try again.`
         });
       }
     } catch (error) {
+      // Rollback on error
       addToast({
         type: 'error',
         title: 'Close Failed',
         message: error instanceof Error ? error.message : 'Unknown error occurred'
       });
     }
-  }, [closePosition, addToast]);
+  }, [closePosition, addToast, positionData]);
   
   // Fetch active sessions on mount and periodically
   useEffect(() => {
+    if (!isConnected) return
+    
+    let isMounted = true
+    let interval: NodeJS.Timeout | null = null
+    
     const fetchActiveSessions = async () => {
-      if (!isConnected) return;
+      if (!isMounted) return
       
       setIsLoadingSessions(true);
       try {
         const sessions = await getTradingSessions();
+        if (!isMounted) return
+        
         // Filter for running sessions only
         const running = sessions.filter(s => s.status === 'running');
         setActiveSessions(running);
       } catch (error) {
-        setActiveSessions([]);
+        if (isMounted) {
+          setActiveSessions([]);
+        }
       } finally {
-        setIsLoadingSessions(false);
+        if (isMounted) {
+          setIsLoadingSessions(false);
+        }
       }
     };
     
+    // Initial fetch
     fetchActiveSessions();
-    // Refresh every 10 seconds
-    const interval = setInterval(fetchActiveSessions, 10000);
-    return () => clearInterval(interval);
+    
+    // Set up polling interval
+    interval = setInterval(fetchActiveSessions, 10000);
+    
+    // Cleanup: Clear interval and set unmounted flag
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    };
   }, [isConnected, getTradingSessions]);
 
   // Auto-create wallet if user doesn't have one - optimized with useCallback
@@ -1546,9 +1740,19 @@ export default function HomePage() {
         throw new Error(message)
       }
 
+      // Optimistic update: Store previous balance
+      const previousBalance = avantisBalance
+      
       setIsDepositing(true)
       setDepositError(null)
       setRecentDepositHash(null)
+      
+      // Show loading toast
+      addToast({
+        type: 'info',
+        title: 'Processing Deposit',
+        message: `Depositing ${amount} ${asset}...`
+      })
 
       try {
         const response = await fetch('/api/wallet/deposit', {
@@ -1659,56 +1863,92 @@ export default function HomePage() {
 
         const txHash = await signAndSendTransaction(txRequest)
         setRecentDepositHash(txHash)
-
-        // Wait for transaction confirmation before refreshing balances
+        
+        // Start transaction status polling with timeout
+        addToast({
+          type: 'info',
+          title: 'Transaction Submitted',
+          message: `Waiting for confirmation...`
+        })
+        
+        // Poll transaction status with timeout
+        const cleanupPoll = pollTransactionStatus(
+          txHash,
+          60000, // 60 second timeout
+          async () => {
+            // Transaction confirmed
+            addToast({
+              type: 'success',
+              title: 'Deposit Confirmed',
+              message: `Successfully deposited ${amount} ${asset}`
+            })
+            
+            // Ensure we only refresh once per transaction hash
+            if (hasRefreshedForTxRef.current.has(txHash)) {
+              return
+            }
+            
+            // Mark this transaction as refreshed
+            hasRefreshedForTxRef.current.add(txHash)
+            
+            // Auto-refresh balance after successful deposit confirmation
+            setIsRefreshingBalance(true)
+            try {
+              await new Promise(resolve => setTimeout(resolve, 2000))
+              await refreshBalances(true) // Force refresh
+            } catch (refreshError) {
+              // Don't throw - deposit was successful, just balance refresh failed
+            } finally {
+              setIsRefreshingBalance(false)
+            }
+          },
+          () => {
+            // Transaction timeout - still try to refresh
+            addToast({
+              type: 'warning',
+              title: 'Confirmation Timeout',
+              message: 'Transaction may still be processing. Balance will update when confirmed.'
+            })
+            
+            if (hasRefreshedForTxRef.current.has(txHash)) {
+              return
+            }
+            
+            hasRefreshedForTxRef.current.add(txHash)
+            
+            // Try to refresh even on timeout
+            setIsRefreshingBalance(true)
+            setTimeout(async () => {
+              try {
+                await refreshBalances(true)
+              } catch (refreshError) {
+                // Balance refresh failed
+              } finally {
+                setIsRefreshingBalance(false)
+              }
+            }, 5000)
+          }
+        )
+        
+        // Also wait for transaction (fallback)
         try {
           await waitForTransaction(txHash, 2) // Wait up to 2 confirmations
-          
-          // Ensure we only refresh once per transaction hash
-          if (hasRefreshedForTxRef.current.has(txHash)) {
-            return
-          }
-          
-          // Mark this transaction as refreshed
-          hasRefreshedForTxRef.current.add(txHash)
-          
-          // Auto-refresh balance after successful deposit confirmation (ONCE ONLY)
-          // Add a small delay to allow blockchain state to propagate
-          setIsRefreshingBalance(true)
-          await new Promise(resolve => setTimeout(resolve, 2000))
-          
-          // Refresh balances to show updated balance immediately (only once)
-          try {
-            await refreshBalances(true) // Force refresh
-          } catch (refreshError) {
-            // Don't throw - deposit was successful, just balance refresh failed
-          } finally {
-            setIsRefreshingBalance(false)
-          }
         } catch (waitError) {
-          // Ensure we only refresh once per transaction hash (even on timeout)
-          if (hasRefreshedForTxRef.current.has(txHash)) {
-            return
-          }
-          
-          // Mark this transaction as refreshed
-          hasRefreshedForTxRef.current.add(txHash)
-          
-          // Still try to refresh even if wait timed out (only once)
-          try {
-            setIsRefreshingBalance(true)
-            await new Promise(resolve => setTimeout(resolve, 3000)) // Longer delay if confirmation wait failed
-            await refreshBalances(true)
-          } catch (refreshError) {
-            // Balance refresh failed, but deposit was successful
-          } finally {
-            setIsRefreshingBalance(false)
-          }
+          // Polling will handle the status
         }
+        
       } catch (error) {
+        // Rollback optimistic update on error
         const message = error instanceof Error ? error.message : 'Deposit failed'
         setDepositError(message)
         setRecentDepositHash(null)
+        
+        addToast({
+          type: 'error',
+          title: 'Deposit Failed',
+          message: message
+        })
+        
         throw error
       } finally {
         setIsDepositing(false)
@@ -1724,16 +1964,29 @@ export default function HomePage() {
       refreshBalances,
       refreshWallets,
       estimateGas,
-      baseSdk
+      baseSdk,
+      pollTransactionStatus,
+      addToast,
+      avantisBalance
     ]
   )
 
-  // Handle withdraw from trading wallet
+  // Handle withdraw from trading wallet with optimistic update and transaction polling
   const handleWithdraw = useCallback(
     async ({ amount, recipientAddress }: { amount: string; recipientAddress: string }) => {
+      // Optimistic update: Store previous balance
+      const previousBalance = avantisBalance
+      
       setWithdrawError(null)
       setRecentWithdrawHash(null)
       setIsWithdrawing(true)
+      
+      // Show loading toast
+      addToast({
+        type: 'info',
+        title: 'Processing Withdrawal',
+        message: `Withdrawing $${amount} USDC...`
+      })
 
       try {
         if (!token) {
@@ -1760,25 +2013,67 @@ export default function HomePage() {
           throw new Error(data.error || 'Withdrawal failed')
         }
 
-        setRecentWithdrawHash(data.txHash)
+        const txHash = data.txHash
+        setRecentWithdrawHash(txHash)
         
-        // Refresh balance after successful withdrawal
-        setIsRefreshingBalance(true)
-        try {
-          await new Promise(resolve => setTimeout(resolve, 3000))
-          await refreshBalances(true)
-        } finally {
-          setIsRefreshingBalance(false)
-        }
-        
+        // Start transaction status polling with timeout
         addToast({
-          title: 'Withdrawal Successful',
-          message: `Successfully withdrew $${amount} USDC`,
-          type: 'success'
+          type: 'info',
+          title: 'Transaction Submitted',
+          message: 'Waiting for confirmation...'
         })
+        
+        // Poll transaction status with timeout
+        pollTransactionStatus(
+          txHash,
+          60000, // 60 second timeout
+          async () => {
+            // Transaction confirmed
+            addToast({
+              type: 'success',
+              title: 'Withdrawal Confirmed',
+              message: `Successfully withdrew $${amount} USDC`
+            })
+            
+            // Refresh balance after successful withdrawal confirmation
+            setIsRefreshingBalance(true)
+            try {
+              await new Promise(resolve => setTimeout(resolve, 2000))
+              await refreshBalances(true)
+            } catch (refreshError) {
+              // Don't throw - withdrawal was successful
+            } finally {
+              setIsRefreshingBalance(false)
+            }
+          },
+          () => {
+            // Transaction timeout - still try to refresh
+            addToast({
+              type: 'warning',
+              title: 'Confirmation Timeout',
+              message: 'Transaction may still be processing. Balance will update when confirmed.'
+            })
+            
+            // Try to refresh even on timeout
+            setIsRefreshingBalance(true)
+            setTimeout(async () => {
+              try {
+                await refreshBalances(true)
+              } catch (refreshError) {
+                // Balance refresh failed
+              } finally {
+                setIsRefreshingBalance(false)
+              }
+            }, 5000)
+          }
+        )
+        
       } catch (error) {
+        // Rollback optimistic update on error
         const message = error instanceof Error ? error.message : 'Withdrawal failed'
         setWithdrawError(message)
+        setRecentWithdrawHash(null)
+        
         addToast({
           title: 'Withdrawal Failed',
           message: message,
@@ -1789,7 +2084,7 @@ export default function HomePage() {
         setIsWithdrawing(false)
       }
     },
-    [token, refreshBalances, addToast]
+    [token, refreshBalances, addToast, pollTransactionStatus, avantisBalance]
   )
 
   // Memoized holdings calculation - use tradingHoldings for Holdings section
@@ -1949,12 +2244,7 @@ export default function HomePage() {
                       key={tradingSession.sessionId || tradingSession.id}
                       className="bg-[#2a2a2a] border border-[#262626] rounded-lg p-4 cursor-pointer hover:bg-[#333] transition-colors"
                       onClick={() => {
-                        const params = new URLSearchParams({
-                          mode: 'real',
-                          view: 'positions',
-                          sessionId: tradingSession.sessionId || tradingSession.id
-                        });
-                        router.push(`/chat?${params.toString()}`);
+                        setIsPositionsModalOpen(true)
                       }}
                     >
                       <div className="flex items-center justify-between mb-2">
@@ -1982,12 +2272,7 @@ export default function HomePage() {
                         key={session.id}
                         className="bg-[#2a2a2a] border border-[#262626] rounded-lg p-4 cursor-pointer hover:bg-[#333] transition-colors"
                         onClick={() => {
-                          const params = new URLSearchParams({
-                            mode: 'real',
-                            view: 'positions',
-                            sessionId: session.id
-                          });
-                          router.push(`/chat?${params.toString()}`);
+                          setIsPositionsModalOpen(true)
                         }}
                       >
                         <div className="flex items-center justify-between mb-2">
@@ -2029,15 +2314,7 @@ export default function HomePage() {
                     Session: {tradingSession?.sessionId?.slice(-8) || (positionData?.openPositions ? 'Restoring...' : 'N/A')}
                   </span>
                   <Button
-                    onClick={() => {
-                      const sessionId = tradingSession?.sessionId || 'active';
-                      const params = new URLSearchParams({
-                        mode: 'real',
-                        view: 'positions',
-                        ...(tradingSession?.sessionId ? { sessionId } : {})
-                      });
-                      router.push(`/chat?${params.toString()}`);
-                    }}
+                    onClick={() => setIsPositionsModalOpen(true)}
                     className="bg-[#8759ff] hover:bg-[#7c4dff] text-white text-xs px-3 py-1.5 ml-2"
                   >
                     View Details
@@ -2151,6 +2428,8 @@ export default function HomePage() {
               ethBalanceFormatted={ethBalanceFormatted}
               onViewTrades={handleViewTrades}
               isRefreshingBalance={isRefreshingBalance}
+              addToast={addToast}
+              startTradingSession={startTradingSession}
             />
           )}
 
@@ -2330,6 +2609,73 @@ export default function HomePage() {
 
       {/* Floating Live Trading Card */}
       <FloatingLiveCard />
+      
+      {/* Positions Modal */}
+      <Modal
+        isOpen={isPositionsModalOpen}
+        onClose={() => setIsPositionsModalOpen(false)}
+        className="border border-[#262626]"
+      >
+        <div className="flex flex-col h-full max-h-[90vh]">
+          {/* Modal Header */}
+          <div className="flex items-center justify-between p-4 sm:p-6 border-b border-[#262626] flex-shrink-0">
+            <div className="flex items-center space-x-2">
+              <div className="w-2 h-2 bg-[#27c47d] rounded-full animate-pulse"></div>
+              <h2 className="text-white font-semibold text-lg sm:text-xl">Active Positions</h2>
+            </div>
+            <button
+              onClick={() => setIsPositionsModalOpen(false)}
+              className="p-2 rounded-lg hover:bg-[#262626] text-[#9ca3af] hover:text-white transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          
+          {/* Modal Body - Scrollable */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            {tradingSession && tradingSession.status === 'running' && (
+              <div className="mb-4 p-4 bg-[#2a2a2a] border border-[#374151] rounded-lg">
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-[#9ca3af]">Session ID:</span>
+                    <p className="text-white font-mono text-xs mt-1">
+                      {tradingSession.sessionId?.slice(0, 16) || 'N/A'}...
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[#9ca3af]">Status:</span>
+                    <p className="text-[#27c47d] font-medium mt-1">Running</p>
+                  </div>
+                  <div>
+                    <span className="text-[#9ca3af]">Total PnL:</span>
+                    <p className={`font-semibold mt-1 ${
+                      (positionData?.totalPnL || tradingSession?.totalPnL || 0) >= 0 
+                        ? 'text-[#27c47d]' 
+                        : 'text-[#ef4444]'
+                    }`}>
+                      ${(positionData?.totalPnL || tradingSession?.totalPnL || 0).toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[#9ca3af]">Target Profit:</span>
+                    <p className="text-white font-semibold mt-1">
+                      ${tradingSession.config?.profitGoal || '0'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <PositionsTable
+              positions={positionData?.positions || []}
+              isLoading={positionsLoading}
+              onClosePosition={handleClosePosition}
+            />
+          </div>
+        </div>
+      </Modal>
     </ProtectedRoute>
   )
 }
