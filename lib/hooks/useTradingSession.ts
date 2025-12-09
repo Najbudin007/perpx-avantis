@@ -193,7 +193,14 @@ export function useTradingSession() {
         setFeePaidTime(null);
         setPositionWarning(null);
         
-        onProgress?.('complete', '✅ Trading session ready! Fee will be deducted when first position opens.');
+        // Use setTimeout to prevent crash when showing completion notification
+        setTimeout(() => {
+          try {
+            onProgress?.('complete', '✅ Trading session ready! Fee will be deducted when first position opens.');
+          } catch (progressError) {
+            console.error('[useTradingSession] Error in complete progress callback:', progressError);
+          }
+        }, 50);
         
         return session.id;
       } catch (sessionError) {

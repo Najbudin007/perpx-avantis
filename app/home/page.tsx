@@ -395,25 +395,37 @@ const TradingCard = ({
         maxPerSession: parseInt(maxPositions) || 1,
         lossThreshold: parseFloat(lossThreshold) || 10
       }, (step: string, message: string) => {
-        // Show progress updates via toast
-        if (step === 'fee') {
-          addToast({
-            type: 'info',
-            title: 'Processing Fee',
-            message: message
-          })
-        } else if (step === 'session') {
-          addToast({
-            type: 'info',
-            title: 'Starting Session',
-            message: message
-          })
-        } else if (step === 'complete') {
-          addToast({
-            type: 'success',
-            title: 'Trading Started',
-            message: 'Your trading session is now active!'
-          })
+        try {
+          // Show progress updates via toast with error handling
+          if (step === 'fee') {
+            addToast({
+              type: 'info',
+              title: 'Processing Fee',
+              message: message
+            })
+          } else if (step === 'session') {
+            addToast({
+              type: 'info',
+              title: 'Starting Session',
+              message: message
+            })
+          } else if (step === 'complete') {
+            // Use setTimeout to ensure toast doesn't crash the app
+            setTimeout(() => {
+              try {
+                addToast({
+                  type: 'success',
+                  title: 'Trading Started',
+                  message: 'Your trading session is now active!'
+                })
+              } catch (toastError) {
+                console.error('Error showing success toast:', toastError)
+              }
+            }, 100)
+          }
+        } catch (progressError) {
+          console.error('Error in progress callback:', progressError)
+          // Don't throw - just log the error
         }
       })
       
@@ -424,11 +436,20 @@ const TradingCard = ({
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to start trading'
-      addToast({
-        type: 'error',
-        title: 'Trading Start Failed',
-        message: errorMessage
-      })
+      console.error('[handleStartTrading] Error starting trading:', error)
+      
+      // Show error toast with error handling
+      try {
+        addToast({
+          type: 'error',
+          title: 'Trading Start Failed',
+          message: errorMessage
+        })
+      } catch (toastError) {
+        console.error('Error showing error toast:', toastError)
+        // Fallback: at least log to console
+        console.error('Trading Start Failed:', errorMessage)
+      }
     } finally {
       setIsTrading(false)
       isStartingTradingRef.current = false
@@ -1463,16 +1484,7 @@ export default function HomePage() {
   // Modal state for viewing positions
   const [isPositionsModalOpen, setIsPositionsModalOpen] = useState(false)
   
-  // State for active sessions list
-  const [activeSessions, setActiveSessions] = useState<Array<{
-    id: string;
-    status: string;
-    startTime: string | Date;
-    totalPnL: number;
-    positions: number;
-    config?: any;
-  }>>([])
-  const [isLoadingSessions, setIsLoadingSessions] = useState(false)
+  // Note: activeSessions state removed - we now use FloatingLiveCard instead
 
   const { signAndSendTransaction, waitForTransaction, isAvailable: isBaseTxAvailable, estimateGas } = useBaseAccountTransactions()
   const { sdk: baseSdk } = useBaseMiniApp()
@@ -1646,47 +1658,7 @@ export default function HomePage() {
     }
   }, [closePosition, addToast, positionData]);
   
-  // Fetch active sessions on mount and periodically
-  useEffect(() => {
-    if (!isConnected) return
-    
-    let isMounted = true
-    let interval: NodeJS.Timeout | null = null
-    
-    const fetchActiveSessions = async () => {
-      if (!isMounted) return
-      
-      setIsLoadingSessions(true);
-      try {
-        const sessions = await getTradingSessions();
-        if (!isMounted) return
-        
-        // Filter for running sessions only
-        const running = sessions.filter(s => s.status === 'running');
-        setActiveSessions(running);
-      } catch (error) {
-        if (isMounted) {
-          setActiveSessions([]);
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoadingSessions(false);
-        }
-      }
-    };
-    
-    // Initial fetch
-    fetchActiveSessions();
-    
-    // Set up polling interval
-    interval = setInterval(fetchActiveSessions, 10000);
-    
-    // Cleanup: Clear interval and set unmounted flag
-    return () => {
-      isMounted = false;
-      if (interval) clearInterval(interval);
-    };
-  }, [isConnected, getTradingSessions]);
+  // Note: Removed activeSessions fetching - FloatingLiveCard handles session display now
 
   // Auto-create wallet if user doesn't have one - optimized with useCallback
   // NOTE: For web users, wallet is created during OTP verification, so this is mainly for Farcaster users
@@ -2223,82 +2195,6 @@ export default function HomePage() {
             )
           )}
 
-          {/* Active Trading Sessions Section - Shows all running sessions */}
-          {isConnected && (activeSessions.length > 0 || (tradingSession && tradingSession.status === 'running')) && (
-            <Card className="bg-[#1a1a1a] border-[#262626] rounded-2xl p-4 sm:p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-semibold text-lg">Active Trading Sessions</h2>
-                <span className="text-[#b4b4b4] text-sm">
-                  {activeSessions.length > 0 ? `${activeSessions.length} active` : 
-                   (tradingSession && tradingSession.status === 'running' ? '1 active' : '0 active')}
-                </span>
-              </div>
-              
-              {isLoadingSessions ? (
-                <div className="text-center py-4 text-[#b4b4b4] text-sm">Loading sessions...</div>
-              ) : (
-                <div className="space-y-3">
-                  {/* Current session if exists */}
-                  {tradingSession && tradingSession.status === 'running' && (
-                    <div 
-                      key={tradingSession.sessionId || tradingSession.id}
-                      className="bg-[#2a2a2a] border border-[#262626] rounded-lg p-4 cursor-pointer hover:bg-[#333] transition-colors"
-                      onClick={() => {
-                        setIsPositionsModalOpen(true)
-                      }}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-2 h-2 bg-[#27c47d] rounded-full animate-pulse"></div>
-                          <span className="text-white font-medium">Session {(tradingSession.sessionId || tradingSession.id)?.slice(-8)}</span>
-                          <span className="text-[#27c47d] text-xs px-2 py-0.5 rounded bg-[#27c47d]/20">Running</span>
-                        </div>
-                        <span className={`text-sm font-medium ${(tradingSession.totalPnL || 0) >= 0 ? 'text-[#27c47d]' : 'text-[#dc3545]'}`}>
-                          ${(tradingSession.totalPnL || 0).toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-[#b4b4b4]">
-                        <span>Positions: {tradingSession.openPositions || 0}</span>
-                        <span>Started: {new Date(tradingSession.startTime).toLocaleTimeString()}</span>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Other active sessions */}
-                  {activeSessions
-                    .filter(s => s.id !== tradingSession?.sessionId && s.id !== tradingSession?.id)
-                    .map((session) => (
-                      <div
-                        key={session.id}
-                        className="bg-[#2a2a2a] border border-[#262626] rounded-lg p-4 cursor-pointer hover:bg-[#333] transition-colors"
-                        onClick={() => {
-                          setIsPositionsModalOpen(true)
-                        }}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center space-x-2">
-                            <div className="w-2 h-2 bg-[#27c47d] rounded-full animate-pulse"></div>
-                            <span className="text-white font-medium">Session {session.id.slice(-8)}</span>
-                            <span className="text-[#27c47d] text-xs px-2 py-0.5 rounded bg-[#27c47d]/20">Running</span>
-                          </div>
-                          <span className={`text-sm font-medium ${(session.totalPnL || 0) >= 0 ? 'text-[#27c47d]' : 'text-[#dc3545]'}`}>
-                            ${(session.totalPnL || 0).toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs text-[#b4b4b4]">
-                          <span>Positions: {session.positions || 0}</span>
-                          <span>Started: {new Date(session.startTime).toLocaleTimeString()}</span>
-                        </div>
-                      </div>
-                    ))}
-                  
-                  {activeSessions.length === 0 && (!tradingSession || tradingSession.status !== 'running') && (
-                    <div className="text-center py-4 text-[#b4b4b4] text-sm">No active sessions</div>
-                  )}
-                </div>
-              )}
-            </Card>
-          )}
 
 
           {/* Start Trading Card - Show when wallet is connected */}
