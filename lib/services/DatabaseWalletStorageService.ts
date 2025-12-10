@@ -203,9 +203,9 @@ export class DatabaseWalletStorageService {
   /**
    * Get decrypted private key for a wallet
    */
-  async getPrivateKey(fid: number, chain: string): Promise<string | null> {
+  async getPrivateKey(fid: number, chain: string, walletType?: 'trading' | 'base-account'): Promise<string | null> {
     try {
-      const wallet = await this.getWallet(fid, chain);
+      const wallet = await this.getWallet(fid, chain, walletType);
 
       if (!wallet) {
         return null;

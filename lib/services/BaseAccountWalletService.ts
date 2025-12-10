@@ -67,6 +67,8 @@ export class BaseAccountWalletService {
       
       if (stored) {
         // Wallet exists, return it
+        // Note: getOrCreateWallet doesn't specify walletType, so we get the first matching wallet
+        // For trading wallets, use getWalletWithKey instead
         const privateKey = await this.walletStorage.getPrivateKey(fid, resolvedChain);
         return {
           id: `fid_${fid}_${resolvedChain}`,
@@ -129,8 +131,8 @@ export class BaseAccountWalletService {
         throw new Error('Wallet storage failed: wallet not found after storing');
       }
       
-      // Verify private key can be retrieved
-      const retrievedKey = await this.walletStorage.getPrivateKey(fid, resolvedChain);
+      // Verify private key can be retrieved (pass 'trading' to ensure we get the correct wallet)
+      const retrievedKey = await this.walletStorage.getPrivateKey(fid, resolvedChain, 'trading');
       if (!retrievedKey || retrievedKey.length !== 66 || !retrievedKey.startsWith('0x')) {
         throw new Error(`Private key retrieval failed: wallet stored but key not retrievable or invalid`);
       }
@@ -151,19 +153,30 @@ export class BaseAccountWalletService {
   }
 
   /**
-   * Get wallet with private key for trading
+   * Get trading wallet (EOA with private key) for automated trading operations
+   * 
+   * IMPORTANT: This returns the TRADING WALLET (EOA with private key), NOT the Base Account wallet.
+   * - Trading wallet: EOA (Externally Owned Account) with private key - used for automated trading
+   * - Base Account wallet: Smart wallet (no private key) - used for deposits/withdrawals via Base SDK
+   * 
+   * The trading wallet is required for opening positions on Avantis, as it needs a private key
+   * to sign transactions programmatically.
    */
   async getWalletWithKey(fid: number, chain: string = 'ethereum'): Promise<BaseAccountWallet | null> {
     try {
       const resolvedChain = this.normalizeChain(chain);
       // Always get trading wallet (not base-account) when requesting with key
+      // Trading wallet = EOA with private key for automated trading
       const stored = await this.walletStorage.getWallet(fid, resolvedChain, 'trading');
       
       if (!stored) {
         return null;
       }
 
-      const privateKey = await this.walletStorage.getPrivateKey(fid, resolvedChain);
+      // CRITICAL: Pass 'trading' walletType to getPrivateKey to ensure we get the private key from the correct wallet
+      // Without this, if multiple wallets exist (base-account and trading), it might get the wrong one
+      // The trading wallet (EOA) has the private key needed for automated trading
+      const privateKey = await this.walletStorage.getPrivateKey(fid, resolvedChain, 'trading');
       
       return {
         id: `fid_${fid}_${resolvedChain}`,
@@ -197,11 +210,19 @@ export class BaseAccountWalletService {
     }
 
     // Legacy storage (before migration) - stored under 'ethereum' without private key
-    const legacyWallet = await this.walletStorage.getWallet(fid, 'ethereum');
+    // Check base-account wallet type first, then check if legacy wallet exists without private key
+    const legacyWallet = await this.walletStorage.getWallet(fid, 'ethereum', 'base-account');
     if (legacyWallet) {
+      // Base account wallets don't have private keys, so return the address
+      return legacyWallet.address;
+    }
+    
+    // Also check for legacy wallet without wallet_type specified (might be old data)
+    const legacyWalletNoType = await this.walletStorage.getWallet(fid, 'ethereum');
+    if (legacyWalletNoType) {
       const privateKey = await this.walletStorage.getPrivateKey(fid, 'ethereum');
       if (!privateKey || privateKey.length === 0) {
-        return legacyWallet.address;
+        return legacyWalletNoType.address;
       }
     }
 

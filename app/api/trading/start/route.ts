@@ -135,6 +135,8 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.fid
       const farcasterWalletService = getFarcasterWalletService()
+      // Get trading wallet (EOA with private key) - this is used for automated trading
+      // Note: Base Account wallet (smart wallet) is separate and used for deposits/withdrawals
       const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
       
       if (!farcasterWallet || !farcasterWallet.privateKey) {
@@ -149,7 +151,7 @@ export async function POST(request: NextRequest) {
         address: farcasterWallet.address,
         privateKey: farcasterWallet.privateKey
       }
-      console.log(`[API] [${requestId}] ✅ Using trading wallet for automated trading:`, wallet.address, 'for FID:', authContext.fid)
+      console.log(`[API] [${requestId}] ✅ Using trading wallet (EOA with private key) for automated trading:`, wallet.address, 'for FID:', authContext.fid)
       console.log(`[API] [${requestId}] Private key available:`, farcasterWallet.privateKey ? `${farcasterWallet.privateKey.slice(0, 10)}...${farcasterWallet.privateKey.slice(-4)}` : 'MISSING')
       
       // CRITICAL: Verify the private key matches the wallet address
