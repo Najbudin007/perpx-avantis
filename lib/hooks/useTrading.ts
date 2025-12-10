@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { useBaseMiniApp } from './useBaseMiniApp';
 
 export interface TradingConfig {
   totalBudget: number;
@@ -37,7 +38,8 @@ export interface TradingPosition {
 }
 
 export function useTrading() {
-  const { token } = useAuth();
+  const { token, login } = useAuth();
+  const { authenticate, isBaseContext } = useBaseMiniApp();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -143,6 +145,30 @@ export function useTrading() {
     setError(null);
 
     try {
+      // Ensure we have an auth token (Farcaster/Base mini app)
+      if (!tokenRef.current) {
+        if (!isBaseContext) {
+          throw new Error('Not authenticated. Please open in Farcaster or refresh the session.');
+        }
+
+        const baseAuth = await authenticate();
+        if (!baseAuth?.token) {
+          throw new Error('Authentication failed. Please retry in Farcaster.');
+        }
+
+        // Prime the tokenRef immediately so subsequent calls use it
+        tokenRef.current = baseAuth.token;
+
+        // Persist into AuthContext so the rest of the app sees it
+        login(baseAuth.token, {
+          id: `fid_${baseAuth.fid ?? 'unknown'}`,
+          fid: baseAuth.fid ?? 0,
+          baseAccountAddress: baseAuth.address || null,
+          hasWallet: !!baseAuth.address,
+          createdAt: new Date(),
+        });
+      }
+
       // Normalize payload for API: map UI fields to API expectations
       const payload: any = {
         // required fields

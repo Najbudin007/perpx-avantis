@@ -127,6 +127,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return
       }
 
+      // Attempt to restore existing Base session from localStorage (Farcaster)
+      if (typeof window !== 'undefined') {
+        const storedBaseToken = localStorage.getItem('base_auth_token')
+        const storedBaseUser = localStorage.getItem('base_user')
+        if (storedBaseToken && storedBaseUser) {
+          try {
+            const parsedUser = JSON.parse(storedBaseUser) as User
+            setToken(storedBaseToken)
+            setUser(parsedUser)
+            console.log('✅ Restored Base session from storage, FID:', parsedUser.fid)
+            setIsLoading(false)
+            return
+          } catch (e) {
+            console.warn('Failed to parse stored Base session, clearing...', e)
+            localStorage.removeItem('base_auth_token')
+            localStorage.removeItem('base_user')
+          }
+        }
+      }
+
       try {
         console.log('🔵 Base context detected, authenticating with Base Account...')
         
@@ -154,6 +174,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
           
           setToken(baseAuth.token)
           setUser(baseUser)
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('base_auth_token', baseAuth.token || '')
+            localStorage.setItem('base_user', JSON.stringify(baseUser))
+          }
           console.log('✅ Base Account authentication successful, FID:', baseAuth.fid, 'Address:', baseAuth.address)
         } else {
           console.error('❌ Base Account authentication failed - authenticateBase returned null')
@@ -185,6 +209,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
     console.log('🔐 Login called, setting user FID:', userData.fid)
     setToken(token)
     setUser(userData)
+    if (typeof window !== 'undefined') {
+      if (userData.fid && userData.fid > 0) {
+        localStorage.setItem('base_auth_token', token)
+        localStorage.setItem('base_user', JSON.stringify(userData))
+      } else {
+        localStorage.setItem('web_auth_token', token)
+        localStorage.setItem('web_user', JSON.stringify(userData))
+      }
+    }
   }
 
   const logout = () => {
@@ -194,6 +227,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('web_auth_token')
       localStorage.removeItem('web_user')
+      localStorage.removeItem('base_auth_token')
+      localStorage.removeItem('base_user')
     }
     console.log('Logged out')
   }
