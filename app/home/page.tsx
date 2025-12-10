@@ -67,14 +67,12 @@ const PortfolioBalanceCard = ({
   positionPnL?: number
   openPositions?: number
 }) => {
-  // Available trading balance = wallet USDC only (not including locked collateral)
-  // If avantisBalance includes collateral, subtract it to get available balance
-  // avantisBalance from wallet context may include collateral, so we subtract it
-  const availableBalance = Math.max(0, avantisBalance - positionCollateral)
-  // Total account value = available + collateral + unrealized PnL
-  const totalAccountValue = availableBalance + positionCollateral + positionPnL
-  // Display the AVAILABLE balance (what can be used for new trades)
-  const totalTradingValue = availableBalance
+  // avantisBalance is the wallet USDC balance (not including collateral in positions)
+  // Total balance = wallet USDC + collateral locked in positions + unrealized PnL
+  const totalAccountValue = avantisBalance + positionCollateral + positionPnL
+  // Display the TOTAL balance (including positions and PnL) - this matches what users expect
+  const totalTradingValue = totalAccountValue
+  const availableBalance = avantisBalance // Available for new trades
   const hasActivePositions = openPositions > 0
   
   const [displayBalance, setDisplayBalance] = useState(totalTradingValue)
@@ -1435,11 +1433,9 @@ const TradeHistoryTab = ({
           const data = await response.json()
           setTradeHistory(data.trades || [])
         } else {
-          console.error('Failed to fetch trade history:', response.status)
           setTradeHistory([])
         }
       } catch (err) {
-        console.error('Failed to load trade history:', err)
         setError('Failed to load trade history')
         setTradeHistory([])
       } finally {
@@ -1448,9 +1444,21 @@ const TradeHistoryTab = ({
     }
     
     loadTradeHistory()
-    // Refresh every 60 seconds (not 10 to reduce load)
+    
+    // Listen for position closed events to reload trade history
+    const handlePositionClosed = () => {
+      // Wait a bit longer for blockchain to confirm
+      setTimeout(loadTradeHistory, 3000)
+    }
+    window.addEventListener('position-closed', handlePositionClosed)
+    
+    // Refresh every 60 seconds
     const interval = setInterval(loadTradeHistory, 60000)
-    return () => clearInterval(interval)
+    
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('position-closed', handlePositionClosed)
+    }
   }, [authToken])
   
   const formatDate = (timestamp: number | string | undefined) => {
@@ -1863,6 +1871,18 @@ export default function HomePage() {
   // Refresh session status when component mounts or when positions change
   const { positionData, isLoading: positionsLoading, closePosition, fetchPositions } = usePositions()
   
+  // Listen for position closed events to refresh balance
+  useEffect(() => {
+    const handlePositionClosed = () => {
+      // Refresh balance and positions after close
+      refreshBalances?.()
+      fetchPositions(true)
+    }
+    
+    window.addEventListener('position-closed', handlePositionClosed)
+    return () => window.removeEventListener('position-closed', handlePositionClosed)
+  }, [refreshBalances, fetchPositions])
+  
   // Handle viewing trades - show positions in modal
   const handleViewTrades = useCallback(async () => {
     if (positionData && positionData.openPositions > 0) {
@@ -1991,8 +2011,19 @@ export default function HomePage() {
   
   // Handle closing a position with optimistic update
   const handleClosePosition = useCallback(async (position: Position) => {
-    // Use coin as position identifier (or create a unique ID)
-    const positionId = `${position.coin}-${position.side}`;
+    // Use pair_index as position identifier (required by Avantis)
+    const positionId = position.pair_index;
+    
+    // Validate pair_index is available
+    if (!positionId && positionId !== 0) {
+      console.error('[HomePage] Cannot close position: pair_index is missing', position);
+      addToast({
+        type: 'error',
+        title: 'Close Failed',
+        message: `Cannot close ${position.coin} position: Missing pair index`
+      });
+      return;
+    }
     
     // Optimistic update: Store previous state
     const previousPositions = positionData?.positions || []
@@ -2006,6 +2037,7 @@ export default function HomePage() {
         message: `Closing ${position.coin} ${position.side.toUpperCase()}...`
       });
       
+      console.log('[HomePage] Closing position with pair_index:', positionId);
       const success = await closePosition(positionId);
       
       if (success) {
@@ -2689,7 +2721,7 @@ export default function HomePage() {
                   <div className="p-4 sm:p-6">
                     <PositionsTable
                       positions={positionData?.positions || []}
-                      isLoading={positionsLoading}
+                      isLoading={false}
                       onClosePosition={handleClosePosition}
                     />
                   </div>

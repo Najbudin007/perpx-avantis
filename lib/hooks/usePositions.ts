@@ -90,8 +90,8 @@ export function usePositions() {
     }
 
     fetchInProgressRef.current = true;
-    // Don't set loading state for background refreshes to prevent skeleton flash
-    if (!positionData || force) {
+    // Only set loading state for initial load, never for background refreshes
+    if (!positionData) {
       setIsLoading(true);
     }
     setError(null);
@@ -170,7 +170,10 @@ export function usePositions() {
         throw new Error(`Position ${positionIdentifier} does not have a pair_index. Cannot close position.`);
       }
       
-      const token = getStorageItem('token', '');
+      // Use token from useAuth() context, not from storage
+      if (!token) {
+        throw new Error('Not authenticated. Please log in again.');
+      }
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout for close
@@ -199,8 +202,12 @@ export function usePositions() {
       
       // Force refresh positions after successful close
       if (result.success) {
-        // Small delay to allow blockchain to update
-        setTimeout(() => fetchPositions(true), 1000);
+        // Small delay to allow blockchain to update, then trigger full app reload
+        setTimeout(() => {
+          fetchPositions(true);
+          // Trigger a custom event to reload balance and trade history
+          window.dispatchEvent(new CustomEvent('position-closed'));
+        }, 1000);
       }
       
       return result.success;
@@ -212,7 +219,7 @@ export function usePositions() {
     } finally {
       closePositionInProgressRef.current.delete(identifier);
     }
-  }, [fetchPositions]); // Removed token dependency
+  }, [token, fetchPositions]);
 
   const closeAllPositions = useCallback(async (): Promise<boolean> => {
     // TEMPORARY: Skip authentication for testing
@@ -304,9 +311,10 @@ export function usePositions() {
             return;
           }
 
-          // Poll every 10 seconds when positions exist (for live PnL updates)
-          // Poll every 30 seconds when no positions (just checking for new positions)
-          const pollInterval = positionData && positionData.openPositions > 0 ? 10000 : 30000;
+          // Poll less frequently now that prices are fetched separately
+          // Poll every 30 seconds when positions exist (just for position changes)
+          // Poll every 60 seconds when no positions (just checking for new positions)
+          const pollInterval = positionData && positionData.openPositions > 0 ? 30000 : 60000;
           interval = setInterval(async () => {
             // Only fetch if we have a token and not already in progress
             if (token && !fetchInProgressRef.current && !document.hidden) {

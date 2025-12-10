@@ -22,7 +22,14 @@ export async function POST(request: NextRequest) {
     }
 
     const token = authHeader.substring(7)
-    const authContext = await verifyTokenAndGetContext(token)
+    let authContext
+    try {
+      authContext = await verifyTokenAndGetContext(token)
+    } catch (authError) {
+      return NextResponse.json({ 
+        error: authError instanceof Error ? authError.message : 'Invalid token. Please log in again.' 
+      }, { status: 401 })
+    }
     
     // Parse request body - Avantis uses pair_index instead of symbol
     const { pair_index, symbol } = await request.json()

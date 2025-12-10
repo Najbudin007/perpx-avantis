@@ -171,18 +171,20 @@ async def prepare_close_position_transaction(
             if trade[0] == "0x0000000000000000000000000000000000000000":
                 raise ValueError(f"No open position found for pair_index={pair_index}")
             
-            position_size_usdc = int(trade[4])  # positionSizeUSDC
+            # Use initial collateral (initialPosToken), not position size
+            # trade[3] = initialPosToken (collateral in USDC with 6 decimals)
+            initial_collateral = int(trade[3])
         except Exception as e:
-            logger.warning(f"Could not read position size: {e}, using full position")
+            logger.warning(f"Could not read position: {e}, using fallback")
             # Fallback: use a large amount (will close full position)
-            position_size_usdc = 2**256 - 1
+            initial_collateral = 2**256 - 1
         
         # Build transaction
         execution_fee_wei = int(0.0001 * 1e18)  # Default execution fee
         fn = trading_contract.close_trade_market_function(
             pair_index=pair_index,
             index=0,  # Default to first trade index
-            amount=position_size_usdc
+            amount=initial_collateral  # Use initial collateral
         )
         
         # Build transaction (without signing)

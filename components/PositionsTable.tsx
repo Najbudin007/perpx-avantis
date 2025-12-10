@@ -1,13 +1,42 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { Position } from '@/types/trading'
+import { useLivePrices } from '@/lib/hooks/useLivePrices'
+import { useAuth } from '@/lib/auth/AuthContext'
 
 interface PositionsTableProps {
   positions: Position[]
   isLoading?: boolean
   onClosePosition?: (position: Position) => Promise<void>
   onEditPosition?: (position: Position) => void
+}
+
+// Helper function to calculate PnL from price update (matches backend logic)
+function calculatePnL(
+  entryPrice: number,
+  currentPrice: number,
+  positionSize: number,
+  collateral: number,
+  leverage: number,
+  isLong: boolean
+): { pnl: number; roe: number } {
+  if (entryPrice <= 0 || positionSize <= 0 || collateral <= 0) {
+    return { pnl: 0, roe: 0 };
+  }
+
+  // Calculate price difference percentage
+  const priceDiffPct = (currentPrice - entryPrice) / entryPrice;
+  // Reverse for shorts
+  const adjustedPriceDiff = isLong ? priceDiffPct : -priceDiffPct;
+  
+  // PnL calculation: price_diff_pct * position_size (matches backend)
+  const pnl = adjustedPriceDiff * positionSize;
+  
+  // ROE = (PnL / Collateral) * 100 (matches backend)
+  const roe = (pnl / collateral) * 100;
+
+  return { pnl, roe };
 }
 
 // Edit TP/SL Modal Component
@@ -27,6 +56,19 @@ function EditTPSLModal({
   const [tpPrice, setTpPrice] = useState('')
   const [slPercent, setSlPercent] = useState('14.19')
   const [tpPercent, setTpPercent] = useState('23.18')
+  
+  // Get live prices for real-time updates
+  const symbols = position ? [position.coin] : []
+  const { prices } = useLivePrices(symbols, isOpen)
+  const currentPrice = position && prices[position.coin] ? prices[position.coin] : position?.markPrice || 0
+  
+  // Initialize state when position changes
+  useEffect(() => {
+    if (position) {
+      setSlPrice(position.stopLoss ? position.stopLoss.toString() : '')
+      setTpPrice(position.takeProfit ? position.takeProfit.toString() : '')
+    }
+  }, [position])
   
   if (!isOpen || !position) return null
   
@@ -101,7 +143,7 @@ function EditTPSLModal({
                 <div className="flex gap-2">
                   <input
                     type="number"
-                    value={slPrice || position.stopLoss || ''}
+                    value={slPrice}
                     onChange={(e) => setSlPrice(e.target.value)}
                     placeholder="SL Price"
                     className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
@@ -133,7 +175,7 @@ function EditTPSLModal({
                 <div className="flex gap-2">
                   <input
                     type="number"
-                    value={tpPrice || position.takeProfit || ''}
+                    value={tpPrice}
                     onChange={(e) => setTpPrice(e.target.value)}
                     placeholder="TP Price"
                     className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
@@ -269,6 +311,54 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
   const [editingPosition, setEditingPosition] = useState<Position | null>(null)
   const [closingPosition, setClosingPosition] = useState<Position | null>(null)
   const [isClosing, setIsClosing] = useState(false)
+  const [isUpdatingTPSL, setIsUpdatingTPSL] = useState(false)
+  const { token } = useAuth()
+  
+  // Extract unique symbols from positions for price polling
+  const symbols = useMemo(() => {
+    return positions.map(p => p.coin || p.symbol || '').filter(Boolean);
+  }, [positions]);
+  
+  // Fetch live prices separately (lightweight, doesn't refresh entire table)
+  const { prices: livePrices } = useLivePrices(symbols, positions.length > 0, 5000); // Poll every 5 seconds
+  
+  // Merge live prices into positions for display (only update price/PnL, not whole row)
+  const positionsWithLivePrices = useMemo(() => {
+    return positions.map(position => {
+      const symbol = (position.coin || position.symbol || '').toUpperCase();
+      const livePrice = livePrices[symbol];
+      
+      // If we have a live price AND it's different from current markPrice, update it
+      if (livePrice && livePrice > 0 && Math.abs(livePrice - position.markPrice) > 0.01) {
+        const leverageNum = typeof position.leverage === 'string' 
+          ? parseFloat(position.leverage) 
+          : position.leverage;
+        const positionSize = position.positionValue || 
+          (position.collateral ? position.collateral * leverageNum : 0);
+        const collateral = position.collateral || (positionSize / leverageNum);
+        const isLong = position.side === 'long';
+        
+        const { pnl, roe } = calculatePnL(
+          position.entryPrice,
+          livePrice,
+          positionSize,
+          collateral,
+          leverageNum,
+          isLong
+        );
+        
+        return {
+          ...position,
+          markPrice: livePrice, // Update current price
+          pnl: pnl, // Update PnL
+          roe: roe, // Update ROE
+        };
+      }
+      
+      // Return original if no live price available or price hasn't changed
+      return position;
+    });
+  }, [positions, livePrices]);
   
   const handleClosePosition = async () => {
     if (!closingPosition || !onClosePosition) return
@@ -281,6 +371,54 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
       console.error('Failed to close position:', error)
     } finally {
       setIsClosing(false)
+    }
+  }
+  
+  const handleUpdateTPSL = async (tp: number | null, sl: number | null) => {
+    if (!editingPosition || !token) return
+    
+    console.log('[PositionsTable] Updating TP/SL:', {
+      position: editingPosition.coin,
+      pair_index: editingPosition.pair_index,
+      tp,
+      sl
+    })
+    
+    setIsUpdatingTPSL(true)
+    try {
+      const response = await fetch('/api/update-tpsl', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          pair_index: editingPosition.pair_index,
+          new_tp: tp,
+          new_sl: sl
+        })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Failed to update TP/SL' }))
+        throw new Error(error.error || 'Failed to update TP/SL')
+      }
+      
+      console.log('[PositionsTable] TP/SL updated successfully')
+      setEditingPosition(null)
+      
+      // Refresh positions after update
+      if (onEditPosition) {
+        setTimeout(() => {
+          // Trigger refresh by calling parent
+          window.location.reload() // Simple refresh for now
+        }, 1000)
+      }
+    } catch (error) {
+      console.error('[PositionsTable] Failed to update TP/SL:', error)
+      alert(error instanceof Error ? error.message : 'Failed to update TP/SL')
+    } finally {
+      setIsUpdatingTPSL(false)
     }
   }
   
@@ -335,7 +473,7 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
             
             {/* Body */}
             <tbody>
-              {positions.map((position, index) => {
+              {positionsWithLivePrices.map((position, index) => {
                 const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
                 const positionSize = position.positionValue || (position.collateral ? position.collateral * leverageNum : 0)
                 const pnlValue = position.pnl || 0
@@ -437,21 +575,6 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                           </svg>
                         </button>
                         
-                        {/* External Link Button */}
-                        <a
-                          href={`https://basescan.org/address/${position.coin}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#374151] rounded-lg flex items-center justify-center transition-colors group"
-                          title="View on Explorer"
-                        >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">
-                            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                            <path d="M15 3h6v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                            <path d="M10 14L21 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </a>
-                        
                         {/* Close Position Button */}
                         <button
                           onClick={() => setClosingPosition(position)}
@@ -478,6 +601,7 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
         position={editingPosition}
         isOpen={!!editingPosition}
         onClose={() => setEditingPosition(null)}
+        onSave={handleUpdateTPSL}
       />
       
       <ClosePositionModal

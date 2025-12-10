@@ -199,7 +199,6 @@ export class RealBalanceService {
 
   async getAllBalances(address: string): Promise<RealBalanceData> {
     try {
-      console.log(`[RealBalanceService] Fetching balances for: ${address}`)
 
       const tokenBalances = await Promise.all(
         this.tokens.map(token => this.getTokenBalance(address, token))
@@ -217,14 +216,6 @@ export class RealBalanceService {
       const dailyChangePercentage = 0
       const lastDayValue = totalPortfolioValue
 
-      // Debug logging
-      console.log(`[RealBalanceService] Balance breakdown for ${address}:`);
-      tokenBalances.forEach(tb => {
-        if (tb.valueUSD > 0) {
-          console.log(`  - ${tb.token.symbol}: $${tb.valueUSD.toFixed(2)} (${tb.balanceFormatted})`);
-        }
-      });
-      console.log(`[RealBalanceService] Total portfolio value: $${totalPortfolioValue.toFixed(2)}`);
 
       return {
         ethBalance: nativeBalance?.balance || '0',

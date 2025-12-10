@@ -15,8 +15,6 @@ function getWebWalletService(): WebWalletService {
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('[API] Positions endpoint called')
-    
     // Verify authentication
     const authHeader = request.headers.get('authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -82,17 +80,12 @@ export async function GET(request: NextRequest) {
       })
     }
     
-    console.log(`[API] Getting positions for ${authContext.context} user:`, authContext.fid || authContext.webUserId)
-    console.log('[API] Using wallet address:', wallet.address)
-    console.log('[API] Wallet private key length:', wallet.privateKey?.length || 0)
 
     // Try to get positions from trading engine first
     const tradingEngineUrl = process.env.TRADING_ENGINE_URL || 'http://localhost:3001'
     
     try {
       const url = `${tradingEngineUrl}/api/positions?privateKey=${encodeURIComponent(wallet.privateKey)}`
-      console.log(`[API] Fetching positions from: ${tradingEngineUrl}/api/positions`)
-      console.log(`[API] Full URL (masked): ${url.substring(0, 60)}...`)
       
       // Increase timeout to 60 seconds for position fetching
       const controller = new AbortController()
@@ -108,12 +101,8 @@ export async function GET(request: NextRequest) {
       
       clearTimeout(timeoutId)
       
-      console.log(`[API] Trading engine response status: ${tradingResponse.status}`)
-      
       if (tradingResponse.ok) {
         const tradingData = await tradingResponse.json()
-        console.log(`[API] Trading engine returned ${tradingData.openPositions || 0} positions`)
-        console.log(`[API] Position data:`, JSON.stringify(tradingData.positions?.slice(0, 2) || []))
         return NextResponse.json({
           positions: tradingData.positions || [],
           totalPnL: tradingData.totalPnL || 0,
@@ -163,10 +152,12 @@ export async function GET(request: NextRequest) {
         stopLoss: pos.stop_loss || null
       }))
 
-      console.log(`[API] Retrieved ${formattedPositions.length} positions directly from Avantis`)
+      // Calculate total PnL from all positions
+      const totalPnL = formattedPositions.reduce((sum, pos) => sum + (pos.pnl || 0), 0)
+      
       return NextResponse.json({
         positions: formattedPositions,
-        totalPnL: balance.total_collateral || 0,
+        totalPnL: totalPnL,
         openPositions: positions.length
       })
     } catch (avantisError) {

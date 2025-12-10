@@ -434,6 +434,31 @@ async def api_get_total_pnl(
         )
 
 
+@app.get("/api/prices")
+async def api_get_prices(
+    symbols: str = Query(..., description="Comma-separated list of symbols (e.g., BTC,ETH,SOL)")
+):
+    """
+    Get current prices for multiple symbols (lightweight endpoint for real-time updates).
+    This endpoint only fetches prices without fetching full position data.
+    """
+    try:
+        from price_fetcher import fetch_prices_for_symbols
+        
+        symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if not symbol_list:
+            return {"prices": {}}
+        
+        price_map = await fetch_prices_for_symbols(symbol_list)
+        return {"prices": price_map}
+    except Exception as e:
+        logger.error(f"Error in get_prices: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get prices: {str(e)}"
+        )
+
+
 @app.get("/api/trade-history")
 async def api_get_trade_history(
     private_key: Optional[str] = Query(None, description="User's private key (for traditional wallets)"),

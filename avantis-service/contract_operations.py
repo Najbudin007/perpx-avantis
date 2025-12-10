@@ -638,7 +638,23 @@ async def close_position_via_contract(
             f"No open trade found for {trader_address} pair={pair_index} index={trade_index}"
         )
 
-    amount_usdc_raw = trade["position_size_usdc_raw"]  # full close (positionSizeUSDC)
+    # For Avantis, closeTradeMarket expects the initial collateral amount (initialPosToken)
+    # NOT the full position size. initialPosToken is in USDC with 6 decimals.
+    amount_usdc_raw = trade["initial_pos_token_raw"]  # Use initial collateral, not position size
+
+    logger.info(
+        f"🔒 Closing position details: trader={trader_address}, pair_index={pair_index}, "
+        f"trade_index={trade_index}"
+    )
+    logger.info(
+        f"   Position size: {trade['position_size_usdc']:.2f} USDC ({trade['position_size_usdc_raw']})"
+    )
+    logger.info(
+        f"   Initial collateral: {amount_usdc_raw / 1e6:.2f} USDC ({amount_usdc_raw})"
+    )
+    logger.info(
+        f"   Leverage: {trade['leverage']}x"
+    )
 
     # 2) Get execution fee for closing (reuse whatever you use for openTrade)
     trading = AvantisTradingContract(
@@ -650,11 +666,6 @@ async def close_position_via_contract(
     if execution_fee_wei is None:
         # Default execution fee for closing (can be tuned)
         execution_fee_wei = int(0.0003 * 10**18)  # e.g. 0.0003 ETH
-
-    logger.info(
-        f"🔒 Closing position: trader={trader_address}, pair_index={pair_index}, "
-        f"trade_index={trade_index}, amount={amount_usdc_raw / 1e6:.2f} USDC"
-    )
 
     # 3) Build & send tx
     tx = trading.build_close_trade_market_tx(
@@ -746,13 +757,14 @@ async def close_all_positions_via_contract(
                     if not trade:
                         continue
 
-                    amount_usdc_raw = trade["position_size_usdc_raw"]
+                    # Use initial collateral, not position size
+                    amount_usdc_raw = trade["initial_pos_token_raw"]
                     if amount_usdc_raw == 0:
                         continue
 
                     logger.info(
                         f"🔒 Closing position on pair_index={pair_index}, "
-                        f"trade_index={trade_index}, size={amount_usdc_raw / 1e6:.2f} USDC"
+                        f"trade_index={trade_index}, collateral={amount_usdc_raw / 1e6:.2f} USDC"
                     )
 
                     tx = trading.build_close_trade_market_tx(

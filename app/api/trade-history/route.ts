@@ -14,8 +14,6 @@ function getWebWalletService(): WebWalletService {
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('[API] Trade history endpoint called')
-    
     // Verify authentication
     const authHeader = request.headers.get('authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -74,7 +72,6 @@ export async function GET(request: NextRequest) {
       })
     }
     
-    console.log(`[API] Getting trade history for wallet: ${wallet.address}`)
 
     // Get trade history from Avantis service (port 3002)
     const avantisApiUrl = process.env.AVANTIS_SERVICE_URL || 'http://localhost:3002'
@@ -96,7 +93,6 @@ export async function GET(request: NextRequest) {
       
       if (response.ok) {
         const data = await response.json()
-        console.log(`[API] Retrieved ${data.count || 0} historical trades`)
         return NextResponse.json({
           trades: data.trades || [],
           count: data.count || 0

@@ -383,6 +383,55 @@ app.post('/api/close-position', async (req, res) => {
   }
 });
 
+// Get prices (lightweight endpoint for real-time updates)
+app.get('/api/prices', async (req, res) => {
+  try {
+    const { symbols } = req.query;
+    
+    if (!symbols || typeof symbols !== 'string') {
+      return res.status(400).json({ 
+        error: 'symbols parameter is required (comma-separated list)',
+        prices: {}
+      });
+    }
+    
+    // Get Avantis API URL at runtime
+    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      
+      const avantisResponse = await fetch(`${avantisApiUrl}/api/prices?symbols=${encodeURIComponent(symbols)}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (avantisResponse && avantisResponse.ok) {
+        const data = await avantisResponse.json();
+        return res.json(data);
+      } else {
+        console.warn(`[API] Avantis service returned status ${avantisResponse?.status} for prices`);
+        return res.json({ prices: {} });
+      }
+    } catch (fetchError) {
+      console.error('[API] Error fetching prices from Avantis service:', fetchError);
+      return res.json({ prices: {} }); // Return empty prices on error
+    }
+  } catch (error) {
+    console.error('[API] Error in /api/prices:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      prices: {}
+    });
+  }
+});
+
 // Get positions
 app.get('/api/positions', async (req, res) => {
   try {
