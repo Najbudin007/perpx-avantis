@@ -58,10 +58,18 @@ class WebTradingBot {
             log('AVANTIS', `✅ Positions will be opened on REAL Avantis dashboard`);
             log('AVANTIS', `✅ Make sure your backend wallet is connected to Avantis dashboard to see positions`);
             log('AVANTIS', `✅ All positions opened will appear in your Avantis dashboard in real-time`);
+            console.log(`[WEB_BOT] ✅ Private key is available: ${config.privateKey ? 'YES' : 'NO'}`);
+            console.log(`[WEB_BOT] ✅ Private key length: ${config.privateKey?.length || 0}`);
         }
         else {
             log('WARN', `⚠️ No private key provided - using Hyperliquid fallback (testing mode)`);
             log('ERROR', `❌ Cannot open positions on Avantis without private key!`);
+            console.error(`[WEB_BOT] ❌ CRITICAL: Private key is MISSING!`);
+            console.error(`[WEB_BOT] ❌ Config object:`, {
+                hasConfig: !!config,
+                hasPrivateKey: !!config?.privateKey,
+                configKeys: config ? Object.keys(config) : []
+            });
         }
         try {
             // Initialize blockchain connection (non-blocking for faster startup)
@@ -224,195 +232,220 @@ class WebTradingBot {
                 log('WEB_BOT', `Market regime: ${marketRegime}`);
                 // Only open new positions if we're under the limit
                 if (positions.length < maxPerSession) {
-                    // Get available trading symbols
+                    // Get available trading symbols - prioritize BTC and ETH
                     const tokens = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'LINK', 'UNI', 'ATOM'];
-                    const slotsLeft = maxPerSession - positions.length;
+                    let slotsLeft = maxPerSession - positions.length;
                     let entriesThis = 0;
-                    // Parallelize symbol evaluation for faster execution (limit to available slots)
-                    const symbolsToEvaluate = tokens.slice(0, Math.min(slotsLeft * 2, tokens.length)); // Evaluate more symbols in parallel
-                    const symbolPromises = symbolsToEvaluate.map(async (symbol) => {
-                        try {
-                            // Parallelize OHLCV data fetching for speed
-                            const [ohlcv4h, ohlcv6h] = await Promise.all([
-                                (0, binanceHistorical_1.getCachedOHLCV)(symbol, '4h', 300).catch(() => null),
-                                (0, binanceHistorical_1.getCachedOHLCV)(symbol, '6h', 300).catch(() => null)
-                            ]);
-                            if (!ohlcv4h || !ohlcv6h || ohlcv4h.close.length < 10 || ohlcv6h.close.length < 10) {
-                                return null; // Skip silently for speed
-                            }
-                            // Calculate budget per position
-                            const perPositionBudget = validatedBudget.budgetPerPosition;
-                            // Get leverage for this symbol
-                            const { leverage } = (0, BudgetAndLeverage_1.getBudgetAndLeverage)(marketRegime, symbol, perPositionBudget);
-                            log('WEB_BOT', `Evaluating ${symbol} | Budget=$${perPositionBudget.toFixed(2)} | Leverage=${leverage}x`);
-                            // Evaluate signal to get direction (using already fetched OHLCV data)
-                            // We'll use the signal logic but execute on Avantis instead
-                            // Evaluate signal to get direction
-                            const signalResult = await (0, strategyEngine_1.evaluateSignalOnly)(symbol, ohlcv4h, {
-                                regimeOverride: marketRegime,
-                                leverage,
-                                bypassBacktestCheck: true
-                            });
-                            const { direction, signalScore, passed, reason: signalReason } = signalResult;
-                            if (!direction || !passed) {
-                                return {
-                                    symbol,
-                                    result: {
-                                        positionOpened: false,
-                                        marketRegime,
-                                        reason: signalReason || "signal_not_passed",
-                                        signalScore
-                                    }
-                                };
-                            }
-                            // If we have a private key, open position on Avantis (real trading)
-                            if (this.config && this.config.privateKey) {
-                                try {
-                                    const isLong = direction === "long";
-                                    // ========================================================
-                                    // RISK MANAGEMENT: Calculate SL and TP for protection
-                                    // ========================================================
-                                    // Get current price for SL/TP calculation
-                                    let currentPrice = 0;
-                                    try {
-                                        currentPrice = await (0, hyperliquid_1.fetchPrice)(symbol);
-                                    }
-                                    catch (e) {
-                                        log('AVANTIS', `⚠️ Could not fetch price for SL/TP calculation: ${e}`);
-                                    }
-                                    // Calculate Stop Loss and Take Profit
-                                    // For high leverage positions, we MUST have a stop loss to prevent liquidation
-                                    let sl;
-                                    let tp;
-                                    if (currentPrice > 0) {
-                                        // Stop Loss: Set at 50% of liquidation distance to give buffer
-                                        // With 25x leverage, liquidation is at ~4% move against you
-                                        // So we set SL at ~2% to exit before liquidation
-                                        const slPercentage = Math.min(2.5, 50 / leverage); // 2.5% max, or 50%/leverage
-                                        // Take Profit: Set at 2x the SL distance (risk:reward = 1:2)
-                                        const tpPercentage = slPercentage * 2;
-                                        if (isLong) {
-                                            // Long position: SL below entry, TP above entry
-                                            sl = currentPrice * (1 - slPercentage / 100);
-                                            tp = currentPrice * (1 + tpPercentage / 100);
-                                        }
-                                        else {
-                                            // Short position: SL above entry, TP below entry
-                                            sl = currentPrice * (1 + slPercentage / 100);
-                                            tp = currentPrice * (1 - tpPercentage / 100);
-                                        }
-                                        log('AVANTIS', `🛡️ RISK PROTECTION: SL=${sl?.toFixed(2)}, TP=${tp?.toFixed(2)} (${slPercentage.toFixed(1)}% SL / ${tpPercentage.toFixed(1)}% TP)`);
-                                    }
-                                    else {
-                                        log('AVANTIS', `⚠️ WARNING: Opening position WITHOUT Stop Loss - liquidation risk!`);
-                                    }
-                                    log('AVANTIS', `🚀 Opening ${symbol} ${isLong ? 'LONG' : 'SHORT'} on REAL AVANTIS PLATFORM...`);
-                                    log('AVANTIS', `   Collateral: $${perPositionBudget.toFixed(2)} | Leverage: ${leverage}x`);
-                                    if (sl)
-                                        log('AVANTIS', `   Stop Loss: $${sl.toFixed(2)} | Take Profit: $${tp?.toFixed(2)}`);
-                                    const avantisResult = await (0, avantis_trading_1.openAvantisPositionSafe)({
-                                        symbol,
-                                        collateral: perPositionBudget,
-                                        leverage,
-                                        is_long: isLong,
-                                        private_key: this.config.privateKey,
-                                        sl, // Add Stop Loss for protection
-                                        tp // Add Take Profit for profit-taking
-                                    });
-                                    if (avantisResult && avantisResult.success) {
-                                        // Increment daily trade counter
-                                        this.tradesOpenedToday++;
-                                        log('AVANTIS', `✅✅✅ Position SUCCESSFULLY opened on Avantis Dashboard!`);
-                                        log('AVANTIS', `   Symbol: ${symbol} | Direction: ${isLong ? 'LONG' : 'SHORT'}`);
-                                        log('AVANTIS', `   Transaction: ${avantisResult.tx_hash?.slice(0, 16)}...`);
-                                        log('AVANTIS', `   Pair Index: ${avantisResult.pair_index}`);
-                                        log('AVANTIS', `   Collateral: $${perPositionBudget.toFixed(2)} | Leverage: ${leverage}x`);
-                                        log('AVANTIS', `   Trades Today: ${this.tradesOpenedToday}/${this.MAX_TRADES_PER_DAY}`);
-                                        log('AVANTIS', `   ==========================================`);
-                                        log('AVANTIS', `   📊 POSITION IS NOW LIVE ON AVANTIS DASHBOARD`);
-                                        log('AVANTIS', `   📊 Visit avantisfi.com and connect your backend wallet`);
-                                        log('AVANTIS', `   📊 The position will appear in "Current Positions" section`);
-                                        log('AVANTIS', `   ==========================================`);
-                                        return {
-                                            symbol,
-                                            result: {
-                                                positionOpened: true,
-                                                marketRegime,
-                                                reason: "executed_on_avantis",
-                                                signalScore,
-                                                avantisTxHash: avantisResult.tx_hash,
-                                                avantisPairIndex: avantisResult.pair_index
-                                            }
-                                        };
-                                    }
-                                    else {
-                                        log('AVANTIS', `❌ Failed to open position on Avantis: ${avantisResult.error}`);
-                                        return {
-                                            symbol,
-                                            result: {
-                                                positionOpened: false,
-                                                marketRegime,
-                                                reason: `avantis_error: ${avantisResult.error}`,
-                                                signalScore
-                                            }
-                                        };
-                                    }
+                    // IMPORTANT: Process symbols SEQUENTIALLY to respect maxPositions limit
+                    // This prevents opening multiple positions when maxPositions=1
+                    log('WEB_BOT', `📊 Available slots: ${slotsLeft}, Max positions: ${maxPerSession}`);
+                    for (const symbol of tokens) {
+                        // Check slots BEFORE each evaluation to respect limit
+                        if (entriesThis >= slotsLeft) {
+                            log('WEB_BOT', `🛑 Slot limit reached (${entriesThis}/${slotsLeft}). Skipping remaining symbols.`);
+                            break;
+                        }
+                        const evalResult = await (async () => {
+                            try {
+                                // Parallelize OHLCV data fetching for speed
+                                const [ohlcv4h, ohlcv6h] = await Promise.all([
+                                    (0, binanceHistorical_1.getCachedOHLCV)(symbol, '4h', 300).catch(() => null),
+                                    (0, binanceHistorical_1.getCachedOHLCV)(symbol, '6h', 300).catch(() => null)
+                                ]);
+                                if (!ohlcv4h || !ohlcv6h || ohlcv4h.close.length < 10 || ohlcv6h.close.length < 10) {
+                                    return null; // Skip silently for speed
                                 }
-                                catch (avantisError) {
-                                    log('AVANTIS', `❌ Exception opening position on Avantis: ${avantisError}`);
+                                // Calculate budget per position
+                                const perPositionBudget = validatedBudget.budgetPerPosition;
+                                // Get leverage for this symbol
+                                const { leverage } = (0, BudgetAndLeverage_1.getBudgetAndLeverage)(marketRegime, symbol, perPositionBudget);
+                                log('WEB_BOT', `Evaluating ${symbol} | Budget=$${perPositionBudget.toFixed(2)} | Leverage=${leverage}x`);
+                                // Evaluate signal to get direction (using already fetched OHLCV data)
+                                // We'll use the signal logic but execute on Avantis instead
+                                // Evaluate signal to get direction
+                                const signalResult = await (0, strategyEngine_1.evaluateSignalOnly)(symbol, ohlcv4h, {
+                                    regimeOverride: marketRegime,
+                                    leverage,
+                                    bypassBacktestCheck: true
+                                });
+                                const { direction, signalScore, passed, reason: signalReason } = signalResult;
+                                if (!direction || !passed) {
                                     return {
                                         symbol,
                                         result: {
                                             positionOpened: false,
                                             marketRegime,
-                                            reason: `avantis_exception: ${avantisError}`,
+                                            reason: signalReason || "signal_not_passed",
                                             signalScore
                                         }
                                     };
                                 }
+                                // If we have a private key, open position on Avantis (real trading)
+                                if (this.config && this.config.privateKey) {
+                                    try {
+                                        const isLong = direction === "long";
+                                        // ========================================================
+                                        // RISK MANAGEMENT: Calculate SL and TP for protection
+                                        // ========================================================
+                                        // Get current price for SL/TP calculation
+                                        let currentPrice = 0;
+                                        try {
+                                            currentPrice = await (0, hyperliquid_1.fetchPrice)(symbol);
+                                        }
+                                        catch (e) {
+                                            log('AVANTIS', `⚠️ Could not fetch price for SL/TP calculation: ${e}`);
+                                        }
+                                        // Calculate Stop Loss and Take Profit
+                                        // For high leverage positions, we MUST have a stop loss to prevent liquidation
+                                        let sl;
+                                        let tp;
+                                        if (currentPrice > 0) {
+                                            // Stop Loss: Set at 50% of liquidation distance to give buffer
+                                            // With 25x leverage, liquidation is at ~4% move against you
+                                            // So we set SL at ~2% to exit before liquidation
+                                            const slPercentage = Math.min(2.5, 50 / leverage); // 2.5% max, or 50%/leverage
+                                            // Take Profit: Set at 2x the SL distance (risk:reward = 1:2)
+                                            const tpPercentage = slPercentage * 2;
+                                            if (isLong) {
+                                                // Long position: SL below entry, TP above entry
+                                                sl = currentPrice * (1 - slPercentage / 100);
+                                                tp = currentPrice * (1 + tpPercentage / 100);
+                                            }
+                                            else {
+                                                // Short position: SL above entry, TP below entry
+                                                sl = currentPrice * (1 + slPercentage / 100);
+                                                tp = currentPrice * (1 - tpPercentage / 100);
+                                            }
+                                            log('AVANTIS', `🛡️ RISK PROTECTION: SL=${sl?.toFixed(2)}, TP=${tp?.toFixed(2)} (${slPercentage.toFixed(1)}% SL / ${tpPercentage.toFixed(1)}% TP)`);
+                                        }
+                                        else {
+                                            log('AVANTIS', `⚠️ WARNING: Opening position WITHOUT Stop Loss - liquidation risk!`);
+                                        }
+                                        log('AVANTIS', `🚀 Opening ${symbol} ${isLong ? 'LONG' : 'SHORT'} on REAL AVANTIS PLATFORM...`);
+                                        log('AVANTIS', `   Collateral: $${perPositionBudget.toFixed(2)} | Leverage: ${leverage}x`);
+                                        if (sl)
+                                            log('AVANTIS', `   Stop Loss: $${sl.toFixed(2)} | Take Profit: $${tp?.toFixed(2)}`);
+                                        const avantisResult = await (0, avantis_trading_1.openAvantisPositionSafe)({
+                                            symbol,
+                                            collateral: perPositionBudget,
+                                            leverage,
+                                            is_long: isLong,
+                                            private_key: this.config.privateKey,
+                                            sl, // Add Stop Loss for protection
+                                            tp // Add Take Profit for profit-taking
+                                        });
+                                        if (avantisResult && avantisResult.success) {
+                                            // Increment daily trade counter
+                                            this.tradesOpenedToday++;
+                                            log('AVANTIS', `✅✅✅ Position SUCCESSFULLY opened on Avantis Dashboard!`);
+                                            log('AVANTIS', `   Symbol: ${symbol} | Direction: ${isLong ? 'LONG' : 'SHORT'}`);
+                                            log('AVANTIS', `   Transaction: ${avantisResult.tx_hash?.slice(0, 16)}...`);
+                                            log('AVANTIS', `   Pair Index: ${avantisResult.pair_index}`);
+                                            log('AVANTIS', `   Collateral: $${perPositionBudget.toFixed(2)} | Leverage: ${leverage}x`);
+                                            log('AVANTIS', `   Trades Today: ${this.tradesOpenedToday}/${this.MAX_TRADES_PER_DAY}`);
+                                            log('AVANTIS', `   ==========================================`);
+                                            log('AVANTIS', `   📊 POSITION IS NOW LIVE ON AVANTIS DASHBOARD`);
+                                            log('AVANTIS', `   📊 Visit avantisfi.com and connect your backend wallet`);
+                                            log('AVANTIS', `   📊 The position will appear in "Current Positions" section`);
+                                            log('AVANTIS', `   ==========================================`);
+                                            return {
+                                                symbol,
+                                                result: {
+                                                    positionOpened: true,
+                                                    marketRegime,
+                                                    reason: "executed_on_avantis",
+                                                    signalScore,
+                                                    avantisTxHash: avantisResult.tx_hash,
+                                                    avantisPairIndex: avantisResult.pair_index
+                                                }
+                                            };
+                                        }
+                                        else {
+                                            log('AVANTIS', `❌ Failed to open position on Avantis: ${avantisResult.error}`);
+                                            return {
+                                                symbol,
+                                                result: {
+                                                    positionOpened: false,
+                                                    marketRegime,
+                                                    reason: `avantis_error: ${avantisResult.error}`,
+                                                    signalScore
+                                                }
+                                            };
+                                        }
+                                    }
+                                    catch (avantisError) {
+                                        log('AVANTIS', `❌ Exception opening position on Avantis: ${avantisError}`);
+                                        return {
+                                            symbol,
+                                            result: {
+                                                positionOpened: false,
+                                                marketRegime,
+                                                reason: `avantis_exception: ${avantisError}`,
+                                                signalScore
+                                            }
+                                        };
+                                    }
+                                }
+                                else {
+                                    // No private key - fallback to Hyperliquid (for testing/development)
+                                    console.error(`[WEB_BOT] ❌ No private key available for ${symbol}!`);
+                                    console.error(`[WEB_BOT] ❌ Config check:`, {
+                                        hasConfig: !!this.config,
+                                        hasPrivateKey: !!this.config?.privateKey,
+                                        configKeys: this.config ? Object.keys(this.config) : []
+                                    });
+                                    log('WARN', `⚠️ No private key available - using Hyperliquid fallback for ${symbol} (positions won't appear on Avantis)`);
+                                    log('ERROR', `❌ CRITICAL: Cannot open positions on Avantis without private key!`);
+                                    const result = await (0, hyperliquid_1.runSignalCheckAndOpen)({
+                                        symbol,
+                                        perPositionBudget,
+                                        leverage,
+                                        regimeOverride: marketRegime
+                                    });
+                                    return { symbol, result };
+                                }
+                            }
+                            catch (error) {
+                                log('WEB_BOT', `Error evaluating ${symbol}: ${error instanceof Error ? error.message : String(error)}`);
+                                return null;
+                            }
+                        })();
+                        // Process result immediately (sequential processing)
+                        if (evalResult) {
+                            const { symbol: evalSymbol, result } = evalResult;
+                            const { positionOpened, signalScore, reason } = result;
+                            if (positionOpened) {
+                                entriesThis++;
+                                this.openPositions++;
+                                slotsLeft--; // Decrease available slots immediately
+                                log('WEB_BOT', `✅ ${evalSymbol} opened | Score=${signalScore} | Entries: ${entriesThis}/${maxPerSession}`);
+                                log('WEB_BOT', `📊 Total open positions: ${this.openPositions}, Slots remaining: ${slotsLeft}`);
+                                // STOP after opening a position if we've reached the limit
+                                if (entriesThis >= (maxPerSession - positions.length)) {
+                                    log('WEB_BOT', `🛑 Position limit reached. Stopping symbol evaluation.`);
+                                    break;
+                                }
                             }
                             else {
-                                // No private key - fallback to Hyperliquid (for testing/development)
-                                log('WARN', `⚠️ No private key available - using Hyperliquid fallback for ${symbol} (positions won't appear on Avantis)`);
-                                const result = await (0, hyperliquid_1.runSignalCheckAndOpen)({
-                                    symbol,
-                                    perPositionBudget,
-                                    leverage,
-                                    regimeOverride: marketRegime
-                                });
-                                return { symbol, result };
+                                log('WEB_BOT', `${evalSymbol} => ❌ No trade | Reason: ${reason}`);
+                                // Log detailed rejection reason for debugging
+                                if (reason && reason.length > 0) {
+                                    const reasonLines = reason.split('\n');
+                                    reasonLines.forEach(line => {
+                                        if (line.trim()) {
+                                            log('WEB_BOT', `   ${line.trim()}`);
+                                        }
+                                    });
+                                }
                             }
                         }
-                        catch (error) {
-                            log('WEB_BOT', `Error evaluating ${symbol}: ${error instanceof Error ? error.message : String(error)}`);
-                            return null;
-                        }
-                    });
-                    // Wait for all evaluations to complete
-                    const evaluationResults = await Promise.all(symbolPromises);
-                    // Process results and open positions (respecting slot limit)
-                    for (const evalResult of evaluationResults) {
-                        if (!evalResult)
-                            continue;
-                        if (entriesThis >= slotsLeft)
-                            break;
-                        const { symbol, result } = evalResult;
-                        const { positionOpened, signalScore, reason } = result;
-                        if (positionOpened) {
-                            entriesThis++;
-                            log('WEB_BOT', `✅ ${symbol} opened | Score=${signalScore} | Count=${entriesThis}`);
-                        }
-                        else {
-                            log('WEB_BOT', `${symbol} => ❌ No trade | Reason: ${reason}`);
-                            // Log detailed rejection reason for debugging
-                            if (reason && reason.length > 0) {
-                                const reasonLines = reason.split('\n');
-                                reasonLines.forEach(line => {
-                                    if (line.trim()) {
-                                        log('WEB_BOT', `   ${line.trim()}`);
-                                    }
-                                });
-                            }
+                    } // End of sequential symbol loop
+                    // Log summary of position opening attempts
+                    if (entriesThis === 0 && (maxPerSession - positions.length) > 0) {
+                        log('WEB_BOT', `⚠️ No positions opened this cycle. Available slots: ${maxPerSession - positions.length}`);
+                        log('WEB_BOT', `   Check signal evaluation logs above for reasons.`);
+                        if (!this.config?.privateKey) {
+                            log('WEB_BOT', `   ⚠️ CRITICAL: No private key available - positions cannot be opened on Avantis!`);
                         }
                     }
                 }

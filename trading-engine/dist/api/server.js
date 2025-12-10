@@ -54,13 +54,25 @@ const app = (0, express_1.default)();
 function getPort() {
     return parseInt(process.env.API_PORT || '3001', 10);
 }
-// Middleware
-app.use((0, cors_1.default)({
+// Middleware - CORS configuration with explicit preflight handling
+// CORS: allow all origins in dev, restrict in prod if needed
+// Note: Frontend should use Next.js API routes to avoid CORS issues
+// This CORS config is for direct trading engine access (if needed)
+const corsOptions = {
     origin: process.env.NODE_ENV === 'production'
         ? ['https://avantis.superapp.gg']
-        : ['http://localhost:3000', 'http://localhost:3001'],
-    credentials: true
-}));
+        : true, // Allow all origins in dev (localhost:3000, etc.)
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    exposedHeaders: ['Content-Type', 'Authorization'],
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+};
+// Apply CORS to all routes
+app.use((0, cors_1.default)(corsOptions));
+// Explicitly handle OPTIONS requests for preflight (before other routes)
+app.options('*', (0, cors_1.default)(corsOptions));
 app.use(express_1.default.json());
 // Initialize session manager
 const sessionManager = new session_manager_1.TradingSessionManager();
@@ -76,21 +88,52 @@ app.get('/api/health', (req, res) => {
 // Start trading session
 app.post('/api/trading/start', async (req, res) => {
     try {
+        console.log(`[API] Received trading start request`);
+        console.log(`[API] Request body keys:`, Object.keys(req.body || {}));
         const { maxBudget, profitGoal, maxPerSession, lossThreshold = 10, // Default 10% loss threshold
         hyperliquidApiWallet, avantisApiWallet, // Avantis private key (required for automated trading)
         userPhoneNumber, userFid, // FID for user identification
         walletAddress, } = req.body;
+        // Log received values (mask sensitive data)
+        console.log(`[API] Received parameters:`, {
+            maxBudget: maxBudget ? parseFloat(maxBudget) : 'MISSING',
+            profitGoal: profitGoal ? parseFloat(profitGoal) : 'MISSING',
+            maxPerSession: maxPerSession ? parseInt(maxPerSession) : 'MISSING',
+            lossThreshold: lossThreshold || 10,
+            hasAvantisApiWallet: !!avantisApiWallet,
+            hasHyperliquidApiWallet: !!hyperliquidApiWallet,
+            hasWalletAddress: !!walletAddress,
+            userFid: userFid || 'none',
+            userPhoneNumber: userPhoneNumber || 'none'
+        });
         // Validate input
         if (!maxBudget || !profitGoal || !maxPerSession) {
+            const missing = [];
+            if (!maxBudget)
+                missing.push('maxBudget');
+            if (!profitGoal)
+                missing.push('profitGoal');
+            if (!maxPerSession)
+                missing.push('maxPerSession');
+            console.error(`[API] ❌ Missing required parameters:`, missing);
             return res.status(400).json({
-                error: 'Missing required parameters: maxBudget, profitGoal, maxPerSession'
+                error: `Missing required parameters: ${missing.join(', ')}`
             });
         }
         // Private key and wallet address are required for automated trading
         const privateKey = avantisApiWallet || hyperliquidApiWallet;
         if (!privateKey || !walletAddress) {
+            const missing = [];
+            if (!privateKey)
+                missing.push('avantisApiWallet (or hyperliquidApiWallet)');
+            if (!walletAddress)
+                missing.push('walletAddress');
+            console.error(`[API] ❌ Missing required wallet data:`, missing);
+            console.error(`[API] ❌ avantisApiWallet:`, avantisApiWallet ? `${avantisApiWallet.slice(0, 10)}...` : 'MISSING');
+            console.error(`[API] ❌ hyperliquidApiWallet:`, hyperliquidApiWallet ? `${hyperliquidApiWallet.slice(0, 10)}...` : 'MISSING');
+            console.error(`[API] ❌ walletAddress:`, walletAddress || 'MISSING');
             return res.status(400).json({
-                error: 'Missing required wallet data: avantisApiWallet (or hyperliquidApiWallet) and walletAddress are required'
+                error: `Missing required wallet data: ${missing.join(' and ')}`
             });
         }
         console.log(`[API] Starting trading session for user ${userPhoneNumber || userFid || 'unknown'} with wallet ${walletAddress}`);
@@ -115,6 +158,11 @@ app.post('/api/trading/start', async (req, res) => {
                 error: 'lossThreshold must be between 1% and 50%'
             });
         }
+        console.log(`[API] Starting session with private key check:`, {
+            hasPrivateKey: !!privateKey,
+            privateKeyLength: privateKey?.length || 0,
+            walletAddress: walletAddress
+        });
         const sessionId = await sessionManager.startSession({
             maxBudget: parseFloat(maxBudget),
             profitGoal: parseFloat(profitGoal),
@@ -124,6 +172,7 @@ app.post('/api/trading/start', async (req, res) => {
             walletAddress,
             privateKey: privateKey // Store private key per-session for Avantis trading
         });
+        console.log(`[API] Session ${sessionId} started. Private key was ${privateKey ? 'provided' : 'MISSING'}`);
         console.log(`[API] Started trading session ${sessionId} for wallet ${walletAddress}`);
         res.json({
             sessionId,
@@ -220,7 +269,7 @@ app.post('/api/close-all-positions', async (req, res) => {
         // For Avantis: Call Avantis service
         // Get Avantis API URL at runtime
         function getAvantisApiUrl() {
-            return process.env.AVANTIS_API_URL || 'http://localhost:3002';
+            return process.env.AVANTIS_API_URL || 'http://localhost:8000';
         }
         const avantisApiUrl = getAvantisApiUrl();
         try {
@@ -292,7 +341,7 @@ app.post('/api/close-position', async (req, res) => {
         // For Avantis: Call Avantis service
         // Get Avantis API URL at runtime
         function getAvantisApiUrl() {
-            return process.env.AVANTIS_API_URL || 'http://localhost:3002';
+            return process.env.AVANTIS_API_URL || 'http://localhost:8000';
         }
         const avantisApiUrl = getAvantisApiUrl();
         try {
@@ -336,6 +385,51 @@ app.post('/api/close-position', async (req, res) => {
         });
     }
 });
+// Get prices (lightweight endpoint for real-time updates)
+app.get('/api/prices', async (req, res) => {
+    try {
+        const { symbols } = req.query;
+        if (!symbols || typeof symbols !== 'string') {
+            return res.status(400).json({
+                error: 'symbols parameter is required (comma-separated list)',
+                prices: {}
+            });
+        }
+        // Get Avantis API URL at runtime
+        const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            const avantisResponse = await fetch(`${avantisApiUrl}/api/prices?symbols=${encodeURIComponent(symbols)}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            if (avantisResponse && avantisResponse.ok) {
+                const data = await avantisResponse.json();
+                return res.json(data);
+            }
+            else {
+                console.warn(`[API] Avantis service returned status ${avantisResponse?.status} for prices`);
+                return res.json({ prices: {} });
+            }
+        }
+        catch (fetchError) {
+            console.error('[API] Error fetching prices from Avantis service:', fetchError);
+            return res.json({ prices: {} }); // Return empty prices on error
+        }
+    }
+    catch (error) {
+        console.error('[API] Error in /api/prices:', error);
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error occurred',
+            prices: {}
+        });
+    }
+});
 // Get positions
 app.get('/api/positions', async (req, res) => {
     try {
@@ -350,14 +444,19 @@ app.get('/api/positions', async (req, res) => {
             });
         }
         // Get positions from Avantis service using private key
-        const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:3002';
+        const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
+        // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
         try {
             const avantisResponse = await fetch(`${avantisApiUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
                 },
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
             if (avantisResponse && avantisResponse.ok) {
                 const avantisData = await avantisResponse.json();
                 // Transform Avantis positions to match expected format
@@ -365,16 +464,17 @@ app.get('/api/positions', async (req, res) => {
                     coin: pos.symbol,
                     symbol: pos.symbol,
                     pair_index: pos.pair_index,
-                    size: (pos.collateral * pos.leverage).toString(),
+                    index: pos.index || 0, // Trade index for closing
+                    size: (pos.position_size || (pos.collateral * pos.leverage)).toString(),
                     side: pos.is_long ? 'long' : 'short',
                     entryPrice: pos.entry_price,
                     markPrice: pos.current_price,
                     pnl: pos.pnl,
                     roe: pos.pnl_percentage || (pos.entry_price > 0 ? (pos.pnl / (pos.collateral * pos.leverage)) * 100 : 0),
-                    positionValue: pos.collateral * pos.leverage,
+                    positionValue: pos.position_size || (pos.collateral * pos.leverage),
                     margin: pos.collateral.toString(),
                     leverage: pos.leverage.toString(),
-                    liquidationPrice: pos.liquidation_price || null, // Include liquidation price from Avantis
+                    liquidationPrice: pos.liquidation_price || null,
                     collateral: pos.collateral,
                     takeProfit: pos.take_profit || null,
                     stopLoss: pos.stop_loss || null
@@ -394,6 +494,30 @@ app.get('/api/positions', async (req, res) => {
             }
         }
         catch (avantisError) {
+            clearTimeout(timeoutId);
+            // Handle timeout and connection errors gracefully
+            if (avantisError instanceof Error) {
+                if (avantisError.name === 'AbortError' || avantisError.message.includes('timeout')) {
+                    console.warn('[API] ⚠️ Timeout fetching positions from Avantis - service may be slow');
+                    console.warn('[API] ⚠️ Returning empty positions - trading can continue');
+                    return res.json({
+                        positions: [],
+                        totalPnL: 0,
+                        openPositions: 0,
+                        warning: 'Avantis service timeout - positions unavailable'
+                    });
+                }
+                else if (avantisError.message.includes('ECONNREFUSED') || avantisError.message.includes('other side closed')) {
+                    console.warn('[API] ⚠️ Avantis service connection refused or closed');
+                    console.warn(`[API] ⚠️ Check if Avantis service is running on ${avantisApiUrl}`);
+                    return res.json({
+                        positions: [],
+                        totalPnL: 0,
+                        openPositions: 0,
+                        warning: 'Avantis service unavailable - positions unavailable'
+                    });
+                }
+            }
             console.error('[API] Error fetching positions from Avantis:', avantisError);
             res.status(500).json({
                 error: avantisError instanceof Error ? avantisError.message : 'Failed to fetch positions from Avantis',
@@ -450,7 +574,7 @@ app.get('/api/trading/config', (req, res) => {
         const config = {
             defaultMaxBudget: process.env.DEFAULT_MAX_BUDGET || 1000,
             defaultProfitGoal: process.env.DEFAULT_PROFIT_GOAL || 100,
-            defaultMaxPositions: process.env.DEFAULT_MAX_POSITIONS || 5,
+            defaultMaxPositions: process.env.DEFAULT_MAX_POSITIONS || 1,
             minBudget: 10,
             maxBudget: 10000000,
             minPositions: 1,
@@ -493,5 +617,17 @@ const port = getPort();
 app.listen(port, () => {
     console.log(`[API] Trading API server running on port ${port}`);
     console.log(`[API] Health check: http://localhost:${port}/api/health`);
+}).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[API] ❌ Port ${port} is already in use`);
+    }
+    else if (err.code === 'EPERM') {
+        console.error(`[API] ❌ Permission denied to bind to port ${port}`);
+        console.error(`[API] ❌ Try running with sudo or use a different port`);
+    }
+    else {
+        console.error(`[API] ❌ Error starting server:`, err);
+    }
+    process.exit(1);
 });
 //# sourceMappingURL=server.js.map

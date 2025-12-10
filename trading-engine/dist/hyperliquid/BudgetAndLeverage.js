@@ -14,7 +14,8 @@ exports.validateAvantisMinPosition = validateAvantisMinPosition;
 exports.validateAndCapBudgetWithAvantis = validateAndCapBudgetWithAvantis;
 const adaptiveConfig_json_1 = __importDefault(require("./adaptiveConfig.json"));
 // Avantis service URL for API calls
-const AVANTIS_SERVICE_URL = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+// Default to port 8000 (Avantis service port)
+const AVANTIS_SERVICE_URL = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
 // Hyperliquid SDK budget limits
 const HYPERLIQUID_BUDGET_LIMITS = {
     MIN_BUDGET_PER_POSITION: 1, // $1 minimum per position
@@ -220,7 +221,7 @@ function validateAndCapBudget(totalBudget, maxPositions, symbol, platform = 'ava
  * @param pairIndex - Avantis pair index
  * @param collateral - Collateral amount in USDC
  * @param leverage - Leverage multiplier
- * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:3002)
+ * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:8000)
  * @returns Validation result with isValid flag and detailed information
  */
 async function validateAvantisMinPosition(symbol, pairIndex, collateral, leverage, avantisServiceUrl = AVANTIS_SERVICE_URL) {
@@ -241,6 +242,15 @@ async function validateAvantisMinPosition(symbol, pairIndex, collateral, leverag
                 return {
                     isValid: true, // Non-blocking: allow trade, backend will catch BELOW_MIN_POS
                     reason: `On-chain minimum not available for this pair, but allowing trade to proceed`
+                };
+            }
+            // CRITICAL FIX: Treat 404 (endpoint not found) as non-blocking
+            // The Avantis service endpoint might not exist, but backend will validate anyway
+            if (response.status === 404) {
+                console.warn(`[validateAvantisMinPosition] Avantis service endpoint not found (404) for pair ${pairIndex}. This is non-blocking - backend will validate minimum position size.`);
+                return {
+                    isValid: true, // Non-blocking: allow trade, backend will catch BELOW_MIN_POS
+                    reason: `Avantis service endpoint not available, but allowing trade to proceed - backend will validate`
                 };
             }
             return {

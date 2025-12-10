@@ -2,26 +2,8 @@ import adaptiveConfig from './adaptiveConfig.json';
 import { Regime } from './regime';
 
 // Avantis service URL for API calls
-// HARDCODED for Farcaster users: Always use Avantis service URL (not RPC URL)
-// This ensures Farcaster users always connect to the correct Avantis service
-// regardless of what's in .env file (which might have RPC URL)
-function getAvantisServiceUrl(): string {
-  // Check if env var is set and doesn't look like an RPC URL
-  const envUrl = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL;
-  if (envUrl && 
-      !envUrl.includes('alchemy') && 
-      !envUrl.includes('rpc') && 
-      !envUrl.includes('g.alchemy') &&
-      !envUrl.includes('mainnet.base.org') &&
-      envUrl.includes('8000')) {
-    // Only use env var if it looks like an Avantis service URL (contains 8000 and not RPC)
-    return envUrl;
-  }
-  // HARDCODED: Always use Avantis service URL
-  // Try Docker service name first (for containerized deployments)
-  return 'http://perpx-avantis-service:8000';
-}
-const AVANTIS_SERVICE_URL = getAvantisServiceUrl();
+// Default to port 8000 (Avantis service port)
+const AVANTIS_SERVICE_URL = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
 
 // Hyperliquid SDK budget limits
 const HYPERLIQUID_BUDGET_LIMITS = {

@@ -37,7 +37,7 @@ export declare function validateAndCapBudget(totalBudget: number, maxPositions: 
  * @param pairIndex - Avantis pair index
  * @param collateral - Collateral amount in USDC
  * @param leverage - Leverage multiplier
- * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:3002)
+ * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:8000)
  * @returns Validation result with isValid flag and detailed information
  */
 export declare function validateAvantisMinPosition(symbol: string, pairIndex: number, collateral: number, leverage: number, avantisServiceUrl?: string): Promise<{

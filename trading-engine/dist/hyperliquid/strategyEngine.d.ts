@@ -6,7 +6,7 @@ export interface EntryDecision {
     confidence: 'low' | 'medium' | 'high';
     direction?: 'long' | 'short';
     isAnticipation?: boolean;
-    entryType?: 'long' | 'short';
+    entryType?: 'long' | 'short' | 'sniper' | 'reversal' | 'counter-trend';
     leverage?: number;
     tp?: number;
     sl?: number;
