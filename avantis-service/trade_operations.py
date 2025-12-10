@@ -221,16 +221,27 @@ async def _ensure_usdc_approval(private_key: str, amount: float) -> None:
             logger.warning(f"Could not check USDC allowance: {e}. Assuming approval needed.")
             allowance = 0
         
+        # Approve slightly more than needed to account for fees and rounding
+        # Approve 110% of amount to ensure we have enough allowance
+        approval_amount = amount * 1.1
+        
         if allowance < amount:
             # Use safe function to approve USDC
-            logger.info(f"🔐 SAFE: Approving USDC: {amount} (current allowance: {allowance})")
+            logger.info(f"🔐 SAFE: Approving USDC: {approval_amount:.2f} (current allowance: {allowance}, required: {amount})")
             
             try:
                 result = await approve_usdc(
-                    amount=amount,
+                    amount=approval_amount,  # Approve 110% to ensure enough allowance
                     private_key=private_key
                 )
-                logger.info(f"✅ SAFE USDC approval successful: {result.get('tx_hash', 'N/A')}")
+                
+                # Wait for confirmation if not already confirmed
+                if not result.get('confirmed'):
+                    logger.info(f"⏳ Waiting for USDC approval confirmation...")
+                    import asyncio
+                    await asyncio.sleep(3)  # Wait 3 seconds for confirmation
+                
+                logger.info(f"✅ SAFE USDC approval successful and confirmed: {result.get('tx_hash', 'N/A')}")
             except Exception as approval_error:
                 logger.error(f"❌ SAFE approval failed: {approval_error}")
                 raise ValueError(f"USDC approval failed: {approval_error}")

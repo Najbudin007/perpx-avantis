@@ -90,9 +90,17 @@ export class WebTradingBot {
       log('AVANTIS', `✅ Positions will be opened on REAL Avantis dashboard`);
       log('AVANTIS', `✅ Make sure your backend wallet is connected to Avantis dashboard to see positions`);
       log('AVANTIS', `✅ All positions opened will appear in your Avantis dashboard in real-time`);
+      console.log(`[WEB_BOT] ✅ Private key is available: ${config.privateKey ? 'YES' : 'NO'}`);
+      console.log(`[WEB_BOT] ✅ Private key length: ${config.privateKey?.length || 0}`);
     } else {
       log('WARN', `⚠️ No private key provided - using Hyperliquid fallback (testing mode)`);
       log('ERROR', `❌ Cannot open positions on Avantis without private key!`);
+      console.error(`[WEB_BOT] ❌ CRITICAL: Private key is MISSING!`);
+      console.error(`[WEB_BOT] ❌ Config object:`, { 
+        hasConfig: !!config, 
+        hasPrivateKey: !!config?.privateKey,
+        configKeys: config ? Object.keys(config) : []
+      });
     }
 
     try {
@@ -268,14 +276,23 @@ export class WebTradingBot {
 
         // Only open new positions if we're under the limit
         if (positions.length < maxPerSession) {
-          // Get available trading symbols
+          // Get available trading symbols - prioritize BTC and ETH
           const tokens = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'LINK', 'UNI', 'ATOM'];
-          const slotsLeft = maxPerSession - positions.length;
+          let slotsLeft = maxPerSession - positions.length;
           let entriesThis = 0;
 
-          // Parallelize symbol evaluation for faster execution (limit to available slots)
-          const symbolsToEvaluate = tokens.slice(0, Math.min(slotsLeft * 2, tokens.length)); // Evaluate more symbols in parallel
-          const symbolPromises = symbolsToEvaluate.map(async (symbol) => {
+          // IMPORTANT: Process symbols SEQUENTIALLY to respect maxPositions limit
+          // This prevents opening multiple positions when maxPositions=1
+          log('WEB_BOT', `📊 Available slots: ${slotsLeft}, Max positions: ${maxPerSession}`);
+          
+          for (const symbol of tokens) {
+            // Check slots BEFORE each evaluation to respect limit
+            if (entriesThis >= slotsLeft) {
+              log('WEB_BOT', `🛑 Slot limit reached (${entriesThis}/${slotsLeft}). Skipping remaining symbols.`);
+              break;
+            }
+
+            const evalResult = await (async () => {
             try {
               // Parallelize OHLCV data fetching for speed
               const [ohlcv4h, ohlcv6h] = await Promise.all([
@@ -430,7 +447,14 @@ export class WebTradingBot {
                 }
               } else {
                 // No private key - fallback to Hyperliquid (for testing/development)
+                console.error(`[WEB_BOT] ❌ No private key available for ${symbol}!`);
+                console.error(`[WEB_BOT] ❌ Config check:`, {
+                  hasConfig: !!this.config,
+                  hasPrivateKey: !!this.config?.privateKey,
+                  configKeys: this.config ? Object.keys(this.config) : []
+                });
                 log('WARN', `⚠️ No private key available - using Hyperliquid fallback for ${symbol} (positions won't appear on Avantis)`);
+                log('ERROR', `❌ CRITICAL: Cannot open positions on Avantis without private key!`);
                 const result = await runSignalCheckAndOpen({
                   symbol,
                   perPositionBudget,
@@ -443,33 +467,46 @@ export class WebTradingBot {
               log('WEB_BOT', `Error evaluating ${symbol}: ${error instanceof Error ? error.message : String(error)}`);
               return null;
             }
-          });
+          })();
 
-          // Wait for all evaluations to complete
-          const evaluationResults = await Promise.all(symbolPromises);
-          
-          // Process results and open positions (respecting slot limit)
-          for (const evalResult of evaluationResults) {
-            if (!evalResult) continue;
-            if (entriesThis >= slotsLeft) break;
-            
-            const { symbol, result } = evalResult;
-            const { positionOpened, signalScore, reason } = result;
-            
-            if (positionOpened) {
-              entriesThis++;
-              log('WEB_BOT', `✅ ${symbol} opened | Score=${signalScore} | Count=${entriesThis}`);
-            } else {
-              log('WEB_BOT', `${symbol} => ❌ No trade | Reason: ${reason}`);
-              // Log detailed rejection reason for debugging
-              if (reason && reason.length > 0) {
-                const reasonLines = reason.split('\n');
-                reasonLines.forEach(line => {
-                  if (line.trim()) {
-                    log('WEB_BOT', `   ${line.trim()}`);
-                  }
-                });
+            // Process result immediately (sequential processing)
+            if (evalResult) {
+              const { symbol: evalSymbol, result } = evalResult;
+              const { positionOpened, signalScore, reason } = result;
+              
+              if (positionOpened) {
+                entriesThis++;
+                this.openPositions++;
+                slotsLeft--; // Decrease available slots immediately
+                log('WEB_BOT', `✅ ${evalSymbol} opened | Score=${signalScore} | Entries: ${entriesThis}/${maxPerSession}`);
+                log('WEB_BOT', `📊 Total open positions: ${this.openPositions}, Slots remaining: ${slotsLeft}`);
+                
+                // STOP after opening a position if we've reached the limit
+                if (entriesThis >= (maxPerSession - positions.length)) {
+                  log('WEB_BOT', `🛑 Position limit reached. Stopping symbol evaluation.`);
+                  break;
+                }
+              } else {
+                log('WEB_BOT', `${evalSymbol} => ❌ No trade | Reason: ${reason}`);
+                // Log detailed rejection reason for debugging
+                if (reason && reason.length > 0) {
+                  const reasonLines = reason.split('\n');
+                  reasonLines.forEach(line => {
+                    if (line.trim()) {
+                      log('WEB_BOT', `   ${line.trim()}`);
+                    }
+                  });
+                }
               }
+            }
+          } // End of sequential symbol loop
+          
+          // Log summary of position opening attempts
+          if (entriesThis === 0 && (maxPerSession - positions.length) > 0) {
+            log('WEB_BOT', `⚠️ No positions opened this cycle. Available slots: ${maxPerSession - positions.length}`);
+            log('WEB_BOT', `   Check signal evaluation logs above for reasons.`);
+            if (!this.config?.privateKey) {
+              log('WEB_BOT', `   ⚠️ CRITICAL: No private key available - positions cannot be opened on Avantis!`);
             }
           }
         }

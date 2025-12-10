@@ -21,6 +21,7 @@ import { WalletConnectionModal } from "@/components/WalletConnectionModal"
 import { WithdrawModal } from "@/components/WithdrawModal"
 import { BuildTimestamp } from "@/components/BuildTimestamp"
 import { PositionsTable } from "@/components/PositionsTable"
+import type { Position } from "@/types/trading"
 import { FloatingLiveCard } from "@/components/FloatingLiveCard"
 import { Modal } from "@/components/ui/modal"
 import Link from "next/link"
@@ -66,8 +67,14 @@ const PortfolioBalanceCard = ({
   positionPnL?: number
   openPositions?: number
 }) => {
-  // Total trading value = free USDC + collateral in positions + unrealized PnL
-  const totalTradingValue = avantisBalance + positionCollateral + positionPnL
+  // Available trading balance = wallet USDC only (not including locked collateral)
+  // If avantisBalance includes collateral, subtract it to get available balance
+  // avantisBalance from wallet context may include collateral, so we subtract it
+  const availableBalance = Math.max(0, avantisBalance - positionCollateral)
+  // Total account value = available + collateral + unrealized PnL
+  const totalAccountValue = availableBalance + positionCollateral + positionPnL
+  // Display the AVAILABLE balance (what can be used for new trades)
+  const totalTradingValue = availableBalance
   const hasActivePositions = openPositions > 0
   
   const [displayBalance, setDisplayBalance] = useState(totalTradingValue)
@@ -373,6 +380,22 @@ const TradingCard = ({
       return;
     }
 
+    // Check ETH balance for gas fees
+    // Minimum ETH required: ~0.0002 ETH (0.0001 for execution fee + 0.0001 buffer for gas)
+    const MIN_ETH_REQUIRED = 0.0002;
+    const ethBalanceNum = ethBalanceFormatted 
+      ? parseFloat(ethBalanceFormatted.replace(/[^0-9.]/g, '')) || 0
+      : 0;
+    
+    if (ethBalanceNum < MIN_ETH_REQUIRED) {
+      addToast({
+        type: 'error',
+        title: 'Insufficient ETH Balance',
+        message: `You need at least ${MIN_ETH_REQUIRED} ETH for gas fees to start trading. Your current ETH balance is ${ethBalanceNum.toFixed(6)} ETH. Please deposit ETH to your wallet.`
+      })
+      return;
+    }
+
     // Calculate target profit USD from percent (already validated to be <= 100%)
     const profitNum = (profitPercentNum / 100) * investmentNum;
     
@@ -393,8 +416,10 @@ const TradingCard = ({
         profitGoal: profitNum,
         targetProfit: profitNum,
         maxPerSession: parseInt(maxPositions) || 1,
-        lossThreshold: parseFloat(lossThreshold) || 10
-      }, (step: string, message: string) => {
+        lossThreshold: parseFloat(lossThreshold) || 10,
+        // Pass wallet details so backend doesn’t reject
+        walletAddress: tradingWalletAddress || baseAccountAddress || primaryWallet?.address || ''
+      } as any, (step: string, message: string) => {
         try {
           // Show progress updates via toast with error handling
           if (step === 'fee') {
@@ -934,11 +959,11 @@ const TradingCard = ({
 
 const WalletInfoCard = ({ 
   tradingWallet,
-  ethBalanceFormatted, 
+  ethBalanceFormatted,
   avantisBalance,
   tradingWalletAddress,
   baseAccountAddress,
-  token,
+  token: authToken,
   isLoading = false,
   onDeposit,
   isDepositing,
@@ -985,7 +1010,7 @@ const WalletInfoCard = ({
     // 1. We already have wallet info with private key
     // 2. We don't have a token
     // 3. We've already attempted to fetch (prevents infinite loops when no wallet exists)
-    if ((tradingWalletWithKey?.privateKey) || !token || hasAttemptedFetch) return
+    if ((tradingWalletWithKey?.privateKey) || !authToken || hasAttemptedFetch) return
     
     // Only fetch once
     let isMounted = true
@@ -998,7 +1023,7 @@ const WalletInfoCard = ({
         // Fetch wallet with private key for MetaMask connection
         const response = await fetch('/api/wallet/primary-with-key', {
           headers: {
-            'Authorization': `Bearer ${token}`
+            'Authorization': `Bearer ${authToken}`
           }
         })
         
@@ -1049,7 +1074,7 @@ const WalletInfoCard = ({
     return () => {
       isMounted = false
     }
-  }, [token, tradingWalletWithKey?.privateKey, hasAttemptedFetch]) // Depend on privateKey to refetch if missing
+  }, [authToken, tradingWalletWithKey?.privateKey, hasAttemptedFetch]) // Depend on privateKey to refetch if missing
 
   const walletToDisplay = tradingWalletWithKey || tradingWallet
 
@@ -1375,6 +1400,348 @@ const WalletInfoCard = ({
   )
 }
 
+// Trade History Tab Component - Shows actual closed trades from Avantis
+const TradeHistoryTab = ({ 
+  tradingSession, 
+  positionData,
+  getTradingSessions,
+  token: authToken
+}: {
+  tradingSession: any
+  positionData: any
+  getTradingSessions: () => Promise<any[]>
+  token: string | null
+}) => {
+  const [tradeHistory, setTradeHistory] = useState<any[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  
+  useEffect(() => {
+    const loadTradeHistory = async () => {
+      if (!authToken) return
+      
+      setIsLoading(true)
+      setError(null)
+      try {
+        // Fetch actual trade history from Avantis (closed trades)
+        const response = await fetch('/api/trade-history', {
+          headers: {
+            'Authorization': `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+          },
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          setTradeHistory(data.trades || [])
+        } else {
+          console.error('Failed to fetch trade history:', response.status)
+          setTradeHistory([])
+        }
+      } catch (err) {
+        console.error('Failed to load trade history:', err)
+        setError('Failed to load trade history')
+        setTradeHistory([])
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadTradeHistory()
+    // Refresh every 60 seconds (not 10 to reduce load)
+    const interval = setInterval(loadTradeHistory, 60000)
+    return () => clearInterval(interval)
+  }, [authToken])
+  
+  const formatDate = (timestamp: number | string | undefined) => {
+    if (!timestamp) return 'N/A'
+    try {
+      const d = typeof timestamp === 'number' 
+        ? new Date(timestamp * 1000)  // Unix timestamp 
+        : new Date(timestamp)
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return 'N/A'
+    }
+  }
+  
+  const formatPrice = (price: number | undefined) => {
+    if (!price) return '$0.00'
+    return price >= 1000 
+      ? `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : `$${price.toFixed(4)}`
+  }
+  
+  if (isLoading) {
+    return (
+      <div className="p-4 sm:p-6">
+        <div className="text-center text-[#9ca3af] text-sm">Loading trade history...</div>
+      </div>
+    )
+  }
+  
+  if (error) {
+    return (
+      <div className="p-4 sm:p-6">
+        <div className="text-center text-[#ef4444] text-sm">{error}</div>
+      </div>
+    )
+  }
+  
+  return (
+    <div className="p-4 sm:p-6">
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-white font-semibold text-lg mb-4">Trade History</h3>
+          {tradeHistory.length > 0 ? (
+            <div className="space-y-3">
+              {tradeHistory.map((trade, index) => {
+                const pnl = trade.pnl || 0
+                const pnlPercentage = trade.pnl_percentage || 0
+                const isProfitable = pnl >= 0
+                
+                return (
+                  <div key={trade.id || trade.tx_hash || index} className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <span className="text-white font-semibold">{trade.symbol}USD</span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${trade.is_long ? 'bg-[#27c47d]/20 text-[#27c47d]' : 'bg-[#ef4444]/20 text-[#ef4444]'}`}>
+                          {trade.side || (trade.is_long ? 'Long' : 'Short')} {trade.leverage}x
+                        </span>
+                      </div>
+                      <span className="text-[#9ca3af] text-xs">{trade.date || formatDate(trade.timestamp)}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+                      <div>
+                        <span className="text-[#9ca3af] text-xs block">Collateral</span>
+                        <span className="text-white">{trade.collateral?.toFixed(2) || '0.00'} USDC</span>
+                      </div>
+                      <div>
+                        <span className="text-[#9ca3af] text-xs block">Open Price</span>
+                        <span className="text-white">{formatPrice(trade.open_price)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[#9ca3af] text-xs block">Close Price</span>
+                        <span className="text-white">{formatPrice(trade.close_price)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[#9ca3af] text-xs block">PnL</span>
+                        <span className={isProfitable ? 'text-[#27c47d]' : 'text-[#ef4444]'}>
+                          {isProfitable ? '+' : ''}{pnl.toFixed(2)} USDC ({pnlPercentage.toFixed(2)}%)
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {trade.tx_hash && (
+                      <div className="mt-2 pt-2 border-t border-[#374151]">
+                        <a 
+                          href={`https://basescan.org/tx/${trade.tx_hash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[#8759ff] text-xs hover:underline"
+                        >
+                          View on Basescan →
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-8 text-center">
+              <p className="text-[#9ca3af] text-sm">No trade history available</p>
+              <p className="text-[#666] text-xs mt-2">Your completed trades will appear here</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Keep the old session-based component for reference (renamed)
+const TradingSessionsTab = ({ 
+  tradingSession, 
+  positionData,
+  getTradingSessions,
+  token: authToken
+}: {
+  tradingSession: any
+  positionData: any
+  getTradingSessions: () => Promise<any[]>
+  token: string | null
+}) => {
+  const [allSessions, setAllSessions] = useState<any[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  
+  useEffect(() => {
+    const loadSessions = async () => {
+      if (!authToken) return
+      
+      setIsLoading(true)
+      try {
+        const sessions = await getTradingSessions()
+        setAllSessions(sessions || [])
+      } catch (err) {
+        console.error('Failed to load sessions:', err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadSessions()
+    // Refresh every 60 seconds (reduced from 10)
+    const interval = setInterval(loadSessions, 60000)
+    return () => clearInterval(interval)
+  }, [authToken, getTradingSessions])
+  
+  // Combine current running session with all sessions
+  const sessionsToShow = useMemo(() => {
+    const sessions = [...allSessions]
+    
+    // If there's a running session not in the list, add it
+    if (tradingSession && tradingSession.status === 'running') {
+      const exists = sessions.find(s => s.id === tradingSession.id || s.sessionId === tradingSession.sessionId)
+      if (!exists) {
+        sessions.unshift({
+          id: tradingSession.id || tradingSession.sessionId,
+          sessionId: tradingSession.sessionId || tradingSession.id,
+          status: tradingSession.status,
+          startTime: tradingSession.startTime,
+          totalPnL: positionData?.totalPnL || tradingSession.totalPnL || 0,
+          openPositions: positionData?.openPositions || tradingSession.openPositions || 0,
+          config: tradingSession.config
+        })
+      }
+    }
+    
+    // Sort by start time (newest first)
+    return sessions.sort((a, b) => {
+      const timeA = a.startTime ? new Date(a.startTime).getTime() : 0
+      const timeB = b.startTime ? new Date(b.startTime).getTime() : 0
+      return timeB - timeA
+    })
+  }, [allSessions, tradingSession, positionData])
+  
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'running':
+        return 'text-[#27c47d]'
+      case 'completed':
+        return 'text-[#8759ff]'
+      case 'stopped':
+        return 'text-[#9ca3af]'
+      case 'error':
+        return 'text-[#ef4444]'
+      default:
+        return 'text-[#9ca3af]'
+    }
+  }
+  
+  const formatDate = (date: Date | string | undefined) => {
+    if (!date) return 'N/A'
+    try {
+      const d = typeof date === 'string' ? new Date(date) : date
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return 'N/A'
+    }
+  }
+  
+  if (isLoading) {
+    return (
+      <div className="p-4 sm:p-6">
+        <div className="text-center text-[#9ca3af] text-sm">Loading sessions...</div>
+      </div>
+    )
+  }
+  
+  return (
+    <div className="p-4 sm:p-6">
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-white font-semibold text-lg mb-4">Bot Sessions</h3>
+          {sessionsToShow.length > 0 ? (
+            <div className="space-y-3">
+              {sessionsToShow.map((session) => {
+                const sessionPnL = session.totalPnL || 0
+                const sessionOpenPositions = session.openPositions || session.positions || 0
+                const isCurrentSession = tradingSession && (session.id === tradingSession.id || session.sessionId === tradingSession.sessionId)
+                const displayPnL = isCurrentSession ? (positionData?.totalPnL ?? sessionPnL) : sessionPnL
+                const displayPositions = isCurrentSession ? (positionData?.openPositions ?? sessionOpenPositions) : sessionOpenPositions
+                
+                return (
+                  <div key={session.id || session.sessionId} className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[#9ca3af] text-sm">Session ID</span>
+                      <span className="text-white font-mono text-xs">
+                        {session.sessionId?.slice(-8) || session.id?.slice(-8) || 'N/A'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[#9ca3af] text-sm">Status</span>
+                      <span className={`font-semibold ${getStatusColor(session.status)}`}>
+                        {session.status === 'running' ? 'Running' : 
+                         session.status === 'completed' ? 'Completed' :
+                         session.status === 'stopped' ? 'Stopped' :
+                         session.status === 'error' ? 'Error' : session.status}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[#9ca3af] text-sm">Started</span>
+                      <span className="text-white text-xs">
+                        {formatDate(session.startTime)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[#9ca3af] text-sm">Total PnL</span>
+                      <span className={`font-semibold ${displayPnL >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'}`}>
+                        ${displayPnL.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#9ca3af] text-sm">Open Positions</span>
+                      <span className="text-white font-semibold">
+                        {displayPositions}
+                      </span>
+                    </div>
+                    {session.config?.profitGoal && (
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-[#374151]">
+                        <span className="text-[#9ca3af] text-sm">Target Profit</span>
+                        <span className="text-white text-xs">
+                          ${session.config.profitGoal.toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-8 text-center">
+              <p className="text-[#9ca3af] text-sm">No trade history available</p>
+              <p className="text-[#666] text-xs mt-2">Your completed trades will appear here</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const HoldingsSection = ({ holdings }: { holdings: Array<{
   token: { symbol: string; name: string; address: string; decimals: number; price: number };
   balance: string;
@@ -1430,7 +1797,7 @@ const HoldingsSection = ({ holdings }: { holdings: Array<{
 }
 
 export default function HomePage() {
-  const { user, token } = useAuth()
+  const { user, token: authToken } = useAuth()
   const [isBalanceVisible, setIsBalanceVisible] = useState(true)
   const [targetProfit, setTargetProfit] = useState("") // Internal: calculated from percent for trading
   const [targetProfitPercent, setTargetProfitPercent] = useState("")
@@ -1449,6 +1816,10 @@ export default function HomePage() {
   const [isWithdrawing, setIsWithdrawing] = useState(false)
   const [withdrawError, setWithdrawError] = useState<string | null>(null)
   const [recentWithdrawHash, setRecentWithdrawHash] = useState<string | null>(null)
+  
+  // Session start modal state
+  const [isSessionStartModalOpen, setIsSessionStartModalOpen] = useState(false)
+  const [newSessionData, setNewSessionData] = useState<{ sessionId: string; investmentAmount: number; profitGoal: number } | null>(null)
   
   const { addToast } = useToast()
 
@@ -1490,7 +1861,7 @@ export default function HomePage() {
   const { sdk: baseSdk } = useBaseMiniApp()
   
   // Refresh session status when component mounts or when positions change
-  const { positionData, isLoading: positionsLoading, closePosition } = usePositions()
+  const { positionData, isLoading: positionsLoading, closePosition, fetchPositions } = usePositions()
   
   // Handle viewing trades - show positions in modal
   const handleViewTrades = useCallback(async () => {
@@ -1619,7 +1990,10 @@ export default function HomePage() {
   }, [])
   
   // Handle closing a position with optimistic update
-  const handleClosePosition = useCallback(async (positionId: string) => {
+  const handleClosePosition = useCallback(async (position: Position) => {
+    // Use coin as position identifier (or create a unique ID)
+    const positionId = `${position.coin}-${position.side}`;
+    
     // Optimistic update: Store previous state
     const previousPositions = positionData?.positions || []
     const previousOpenPositions = positionData?.openPositions || 0
@@ -1629,7 +2003,7 @@ export default function HomePage() {
       addToast({
         type: 'info',
         title: 'Closing Position',
-        message: `Closing ${positionId}...`
+        message: `Closing ${position.coin} ${position.side.toUpperCase()}...`
       });
       
       const success = await closePosition(positionId);
@@ -1638,14 +2012,16 @@ export default function HomePage() {
         addToast({
           type: 'success',
           title: 'Position Closed',
-          message: `Successfully closed ${positionId}`
+          message: `Successfully closed ${position.coin} ${position.side.toUpperCase()}`
         });
+        // Refresh positions after successful close
+        await fetchPositions?.(true);
       } else {
         // Rollback: Position close failed
         addToast({
           type: 'error',
           title: 'Close Failed',
-          message: `Failed to close ${positionId}. Please try again.`
+          message: `Failed to close ${position.coin}. Please try again.`
         });
       }
     } catch (error) {
@@ -1656,7 +2032,7 @@ export default function HomePage() {
         message: error instanceof Error ? error.message : 'Unknown error occurred'
       });
     }
-  }, [closePosition, addToast, positionData]);
+  }, [closePosition, addToast, positionData, fetchPositions]);
   
   // Note: Removed activeSessions fetching - FloatingLiveCard handles session display now
 
@@ -1693,7 +2069,7 @@ export default function HomePage() {
 
   const handleDeposit = useCallback(
     async ({ amount, asset }: { amount: string; asset: 'USDC' | 'ETH' }) => {
-      if (!token) {
+      if (!authToken) {
         const message = 'Authentication required. Please reconnect your wallet.'
         setDepositError(message)
         throw new Error(message)
@@ -1711,6 +2087,10 @@ export default function HomePage() {
         setDepositError(message)
         throw new Error(message)
       }
+
+      // CRITICAL: Log deposit attempt to prevent automatic transfers
+      console.log(`[DEPOSIT] User-initiated deposit: ${amount} ${asset} from ${fromAddress}`)
+      console.log(`[DEPOSIT] This is a MANUAL deposit - no automatic transfers should occur`)
 
       // Optimistic update: Store previous balance
       const previousBalance = avantisBalance
@@ -1731,7 +2111,7 @@ export default function HomePage() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            'Authorization': `Bearer ${authToken}`
           },
           body: JSON.stringify({
             asset,
@@ -1927,7 +2307,7 @@ export default function HomePage() {
       }
     },
     [
-      token,
+      authToken,
       primaryWallet?.address,
       baseAccountAddress,
       signAndSendTransaction,
@@ -1939,7 +2319,8 @@ export default function HomePage() {
       baseSdk,
       pollTransactionStatus,
       addToast,
-      avantisBalance
+      avantisBalance,
+      hasRefreshedForTxRef
     ]
   )
 
@@ -1961,7 +2342,7 @@ export default function HomePage() {
       })
 
       try {
-        if (!token) {
+        if (!authToken) {
           throw new Error('Authentication required')
         }
 
@@ -1969,7 +2350,7 @@ export default function HomePage() {
         const response = await fetch('/api/wallet/withdraw', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${authToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -2056,7 +2437,7 @@ export default function HomePage() {
         setIsWithdrawing(false)
       }
     },
-    [token, refreshBalances, addToast, pollTransactionStatus, avantisBalance]
+    [authToken, refreshBalances, addToast, pollTransactionStatus, avantisBalance]
   )
 
   // Memoized holdings calculation - use tradingHoldings for Holdings section
@@ -2220,7 +2601,47 @@ export default function HomePage() {
               onViewTrades={handleViewTrades}
               isRefreshingBalance={isRefreshingBalance}
               addToast={addToast}
-              startTradingSession={startTradingSession}
+              startTradingSession={async (config, onProgress) => {
+                try {
+                  let returnedSessionId: string | undefined
+                  
+                  const sessionId = await startTradingSession(config, (step, message) => {
+                    onProgress?.(step, message)
+                    // Open modal when session starts
+                    if (step === 'session' && message.includes('Session started')) {
+                      // Extract session ID from message
+                      const extractedId = message.match(/session[_\s]*([a-f0-9]+)/i)?.[1] || 
+                                         message.match(/([a-f0-9]{8,})/i)?.[1] || 
+                                         'N/A'
+                      
+                      returnedSessionId = extractedId
+                      
+                      setNewSessionData({
+                        sessionId: extractedId,
+                        investmentAmount: config.investmentAmount || 0,
+                        profitGoal: config.profitGoal || config.targetProfit || 0
+                      })
+                      setIsSessionStartModalOpen(true)
+                    }
+                  })
+                  
+                  // Also open modal after a short delay if not already opened
+                  setTimeout(() => {
+                    if (!isSessionStartModalOpen && (sessionId || returnedSessionId)) {
+                      setNewSessionData({
+                        sessionId: sessionId || returnedSessionId || 'N/A',
+                        investmentAmount: config.investmentAmount || 0,
+                        profitGoal: config.profitGoal || config.targetProfit || 0
+                      })
+                      setIsSessionStartModalOpen(true)
+                    }
+                  }, 1000)
+                  
+                  return sessionId
+                } catch (error) {
+                  throw error
+                }
+              }}
             />
           )}
 
@@ -2313,46 +2734,12 @@ export default function HomePage() {
 
                 {/* Trade History Tab */}
                 {activeTab === 'tradeHistory' && (
-                  <div className="p-4 sm:p-6">
-                    <div className="space-y-4">
-                      <div>
-                        <h3 className="text-white font-semibold text-lg mb-4">Trade History</h3>
-                        {tradingSession && tradingSession.status === 'running' ? (
-                          <div className="space-y-3">
-                            <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-[#9ca3af] text-sm">Session ID</span>
-                                <span className="text-white font-mono text-xs">
-                                  {tradingSession.sessionId?.slice(-8) || 'N/A'}
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-[#9ca3af] text-sm">Status</span>
-                                <span className="text-[#27c47d] font-semibold">Running</span>
-                              </div>
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-[#9ca3af] text-sm">Total PnL</span>
-                                <span className={`font-semibold ${(positionData?.totalPnL || tradingSession?.totalPnL || 0) >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'}`}>
-                                  ${(positionData?.totalPnL || tradingSession?.totalPnL || 0).toFixed(2)}
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between">
-                                <span className="text-[#9ca3af] text-sm">Open Positions</span>
-                                <span className="text-white font-semibold">
-                                  {positionData?.openPositions || tradingSession?.openPositions || 0}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-8 text-center">
-                            <p className="text-[#9ca3af] text-sm">No trade history available</p>
-                            <p className="text-[#666] text-xs mt-2">Your completed trades will appear here</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <TradeHistoryTab 
+                    tradingSession={tradingSession}
+                    positionData={positionData}
+                    getTradingSessions={getTradingSessions}
+                    token={authToken || ''}
+                  />
                 )}
               </div>
             </Card>
@@ -2371,7 +2758,7 @@ export default function HomePage() {
               avantisBalance={avantisBalance}
               tradingWalletAddress={tradingWalletAddress || tradingWallet?.address || null}
               baseAccountAddress={baseAccountAddress}
-              token={token}
+              token={authToken}
               isLoading={isLoading}
               onDeposit={handleDeposit}
               isDepositing={isDepositing}
@@ -2400,6 +2787,88 @@ export default function HomePage() {
 
       {/* Floating Live Trading Card */}
       <FloatingLiveCard />
+      
+      {/* Session Start Modal - Opens from bottom */}
+      {isSessionStartModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-end animate-fade-in">
+          <div className="w-full bg-[#1a1a1a] border-t border-[#262626] rounded-t-3xl animate-slide-up max-h-[60vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 sm:p-6 border-b border-[#262626] flex-shrink-0">
+              <div className="flex items-center space-x-3">
+                <div className="w-3 h-3 bg-[#27c47d] rounded-full animate-pulse"></div>
+                <h2 className="text-white font-semibold text-lg sm:text-xl">Trading Session Started</h2>
+              </div>
+              <button
+                onClick={() => {
+                  setIsSessionStartModalOpen(false)
+                  setNewSessionData(null)
+                }}
+                className="p-2 rounded-lg hover:bg-[#262626] text-[#9ca3af] hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+              <div className="space-y-4">
+                <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[#9ca3af] text-sm">Session ID</span>
+                    <span className="text-white font-mono text-xs">
+                      {newSessionData?.sessionId || 'N/A'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[#9ca3af] text-sm">Investment Amount</span>
+                    <span className="text-white font-semibold">
+                      ${newSessionData?.investmentAmount.toFixed(2) || '0.00'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[#9ca3af] text-sm">Target Profit</span>
+                    <span className="text-[#27c47d] font-semibold">
+                      ${newSessionData?.profitGoal.toFixed(2) || '0.00'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#9ca3af] text-sm">Status</span>
+                    <span className="text-[#27c47d] font-semibold">Running</span>
+                  </div>
+                </div>
+                
+                <div className="bg-[#1f2937] border border-[#374151] rounded-lg p-4">
+                  <p className="text-[#9ca3af] text-sm">
+                    Your trading session is now active! The AI bot will monitor market conditions and open positions when opportunities arise.
+                  </p>
+                </div>
+                
+                <div className="flex gap-3">
+                  <Button
+                    onClick={() => {
+                      setIsSessionStartModalOpen(false)
+                      setNewSessionData(null)
+                    }}
+                    className="flex-1 bg-[#8759ff] hover:bg-[#7c4dff] text-white"
+                  >
+                    Got it
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setIsSessionStartModalOpen(false)
+                      setNewSessionData(null)
+                      setActiveTab('tradeHistory')
+                    }}
+                    className="flex-1 bg-[#2a2a2a] hover:bg-[#374151] text-white border border-[#374151]"
+                  >
+                    View History
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Positions Modal */}
       <Modal

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '../auth/AuthContext';
 
 export interface TradingConfig {
@@ -9,6 +9,9 @@ export interface TradingConfig {
   maxPositions: number;
   leverage?: number;
   lossThreshold?: number;
+  walletAddress?: string;
+  avantisApiWallet?: string;
+  hyperliquidApiWallet?: string;
 }
 
 export interface TradingSession {
@@ -38,8 +41,15 @@ export function useTrading() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Use ref to store token to prevent callback recreation
+  const tokenRef = useRef(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
   const makeRequest = useCallback(async (url: string, options: RequestInit = {}, retries = 2) => {
-    if (!token) {
+    const currentToken = tokenRef.current;
+    if (!currentToken) {
       throw new Error('Not authenticated. Please login with Base Account.');
     }
 
@@ -48,12 +58,15 @@ export function useTrading() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
         
-        const response = await fetch(url, {
+        // Construct full URL if relative
+        const fullUrl = url.startsWith('http') ? url : `${process.env.NEXT_PUBLIC_TRADING_ENGINE_URL || 'http://localhost:3001'}${url}`;
+        
+        const response = await fetch(fullUrl, {
           ...options,
           signal: controller.signal,
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${currentToken}`,
             ...options.headers,
           },
         });
@@ -130,9 +143,26 @@ export function useTrading() {
     setError(null);
 
     try {
+      // Normalize payload for API: map UI fields to API expectations
+      const payload: any = {
+        // required fields
+        maxBudget: (config as any).maxBudget ?? (config as any).totalBudget ?? config.totalBudget,
+        profitGoal: config.profitGoal,
+        maxPerSession: (config as any).maxPerSession ?? (config as any).maxPositions ?? config.maxPositions,
+        lossThreshold: config.lossThreshold ?? (config as any).lossThreshold ?? 10,
+      };
+
+      // Pass through optional fields if present
+      if ((config as any).leverage !== undefined) payload.leverage = (config as any).leverage;
+      if ((config as any).totalBudget !== undefined) payload.totalBudget = (config as any).totalBudget;
+      if ((config as any).maxPositions !== undefined) payload.maxPositions = (config as any).maxPositions;
+      if ((config as any).walletAddress) payload.walletAddress = (config as any).walletAddress;
+      if ((config as any).avantisApiWallet) payload.avantisApiWallet = (config as any).avantisApiWallet;
+      if ((config as any).hyperliquidApiWallet) payload.hyperliquidApiWallet = (config as any).hyperliquidApiWallet;
+
       const result = await makeRequest('/api/trading/start', {
         method: 'POST',
-        body: JSON.stringify(config),
+        body: JSON.stringify(payload),
       });
 
       // Check if API returned an error

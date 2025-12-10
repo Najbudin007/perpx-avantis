@@ -127,14 +127,14 @@ export async function evaluateSignalOnly(
     // --- Market Outlook Score (MOS) - IMPROVED LOGIC ---
     const mos = calculateMOS({ ohlcv: ohlcv5m, mtfSlopes: [slope5m, slope30m, slope1h] });
     
-    // IMPROVED: Balanced thresholds with smaller neutral zone
-    // MOS ranges from ~-1.0 to +1.0, so we use tighter thresholds
-    const mosThresholdLong = 0.1;   // MOS > 0.1 → Long bias (was -0.5, too loose)
-    const mosThresholdShort = -0.1;  // MOS < -0.1 → Short bias (was 0.5, too loose)
-    const mosThresholdStrongLong = 0.3;   // Strong long signal
-    const mosThresholdStrongShort = -0.3; // Strong short signal
-    const mosThresholdReversalBlockShort = 0.2; // Block short reversal in strong bull
-    const mosThresholdReversalBlockLong = -0.2;  // Block long reversal in strong bear
+    // 🧪 TESTING MODE: VERY LOOSE THRESHOLDS FOR TESTING ALL FUNCTIONALITY
+    // MOS ranges from ~-1.0 to +1.0, using VERY WIDE thresholds to ensure trades happen
+    const mosThresholdLong = -0.8;   // MOS > -0.8 → Long bias (VERY LOOSE FOR TESTING)
+    const mosThresholdShort = 0.8;  // MOS < 0.8 → Short bias (VERY LOOSE FOR TESTING)
+    const mosThresholdStrongLong = -0.5;   // Strong long signal (LOOSE)
+    const mosThresholdStrongShort = 0.5; // Strong short signal (LOOSE)
+    const mosThresholdReversalBlockShort = 0.9; // Block short reversal (VERY LOOSE)
+    const mosThresholdReversalBlockLong = -0.9;  // Block long reversal (VERY LOOSE)
     
     // Determine MOS decision with confidence levels
     let mosDecision: 'long' | 'short' | 'neutral' = 'neutral';
@@ -167,18 +167,18 @@ export async function evaluateSignalOnly(
     // ========================================================
     const marketFilters: Array<{ name: string; pass: boolean; reason: string }> = [];
     
-    // Filter 1: Regime + ADX validation
-    if (marketRegime === 'neutral' && adx < 15) {
+    // Filter 1: Regime + ADX validation (🧪 VERY LOOSE FOR TESTING)
+    if (marketRegime === 'neutral' && adx < 3) { // Changed from 15 to 3
       marketFilters.push({
         name: 'Regime/ADX',
         pass: false,
-        reason: `Neutral regime with low ADX (${adx.toFixed(2)} < 15) - insufficient trend strength`
+        reason: `Neutral regime with extremely low ADX (${adx.toFixed(2)} < 3)`
       });
-    } else if (marketRegime === 'flat_or_choppy' && adx < 20) {
+    } else if (marketRegime === 'flat_or_choppy' && adx < 5) { // Changed from 20 to 5
       marketFilters.push({
         name: 'Regime/ADX',
         pass: false,
-        reason: `Flat/choppy regime with low ADX (${adx.toFixed(2)} < 20) - avoid choppy markets`
+        reason: `Flat/choppy regime with extremely low ADX (${adx.toFixed(2)} < 5)`
       });
     } else {
       marketFilters.push({
@@ -188,18 +188,18 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 2: Volatility check (ATR)
-    if (atrPct < 0.1) {
+    // Filter 2: Volatility check (ATR) (🧪 VERY LOOSE FOR TESTING)
+    if (atrPct < 0.01) { // Changed from 0.1 to 0.01 (almost no check)
       marketFilters.push({
         name: 'Volatility',
         pass: false,
-        reason: `ATR too low (${atrPct.toFixed(2)}% < 0.1%) - insufficient volatility for profitable trades`
+        reason: `ATR extremely low (${atrPct.toFixed(2)}% < 0.01%)`
       });
-    } else if (atrPct > 5.0) {
+    } else if (atrPct > 15.0) { // Changed from 5.0 to 15.0 (allow high volatility)
       marketFilters.push({
         name: 'Volatility',
         pass: false,
-        reason: `ATR too high (${atrPct.toFixed(2)}% > 5.0%) - excessive volatility risk`
+        reason: `ATR extremely high (${atrPct.toFixed(2)}% > 15.0%)`
       });
     } else {
       marketFilters.push({
@@ -209,12 +209,12 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 3: Volume validation
-    if (volumePct < 0.5) {
+    // Filter 3: Volume validation (🧪 VERY LOOSE FOR TESTING)
+    if (volumePct < 0.1) { // Changed from 0.5 to 0.1 (allow very low volume)
       marketFilters.push({
         name: 'Volume',
         pass: false,
-        reason: `Volume too low (${(volumePct * 100).toFixed(2)}% < 50% of average) - low liquidity risk`
+        reason: `Volume extremely low (${(volumePct * 100).toFixed(2)}% < 10% of average)`
       });
     } else {
       marketFilters.push({
@@ -224,12 +224,12 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 4: Signal strength validation
-    if (signalScore < 0.3) {
+    // Filter 4: Signal strength validation (🧪 VERY LOOSE FOR TESTING)
+    if (signalScore < 0.05) { // Changed from 0.3 to 0.05 (almost no check)
       marketFilters.push({
         name: 'Signal Strength',
         pass: false,
-        reason: `Signal score too weak (${signalScore.toFixed(3)} < 0.3) - insufficient signal quality`
+        reason: `Signal score extremely weak (${signalScore.toFixed(3)} < 0.05)`
       });
     } else {
       marketFilters.push({
@@ -239,12 +239,12 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 5: RSI extreme check (avoid overbought/oversold extremes for trend following)
-    if (rsi > 85 || rsi < 15) {
+    // Filter 5: RSI extreme check (🧪 VERY LOOSE FOR TESTING)
+    if (rsi > 99 || rsi < 1) { // Changed from 85/15 to 99/1 (almost no check)
       marketFilters.push({
         name: 'RSI Extreme',
         pass: false,
-        reason: `RSI at extreme (${rsi.toFixed(2)}) - too overbought/oversold for trend following`
+        reason: `RSI at extreme (${rsi.toFixed(2)}) - impossibly overbought/oversold`
       });
     } else {
       marketFilters.push({
@@ -269,87 +269,87 @@ export async function evaluateSignalOnly(
       };
     }
 
-    // --- Sniper & Reversal conditions - IMPROVED THRESHOLDS ---
-    // Enhanced validation with balanced thresholds (not too loose, not too strict)
+    // --- Sniper & Reversal conditions - 🧪 VERY LOOSE FOR TESTING ---
+    // TESTING MODE: Almost all conditions will pass
     const sniperConditions = {
       long: {
-        signalScore: { value: signalScore, pass: signalScore >= 0.3, expected: '≥ 0.3' }, // Improved: require meaningful signal
-        rsi: { value: rsi, pass: rsi >= 25 && rsi <= 75, expected: '25–75' }, // Improved: avoid extremes for trend following
-        rsiSlope: { value: rsiSlope30m, pass: rsiSlope30m > -2, expected: '> -2' }, // Improved: RSI should not be falling too fast
-        atr: { value: atrPct, pass: atrPct >= 0.1 && atrPct <= 5.0, expected: '0.1–5.0%' }, // Improved: reasonable volatility range
-        adx: { value: adx, pass: adx >= 15, expected: '≥ 15' }, // Improved: require meaningful trend strength
-        priceSlope: { value: priceSlopePct, pass: priceSlopePct > -0.03, expected: '> -3%' }, // Improved: allow minor pullbacks
-        trendSlope1h: { value: trendSlopePct1h, pass: trendSlopePct1h > -0.03, expected: '> -3%' }, // Improved: 1h trend should support
-        volumePct: { value: volumePct, pass: volumePct >= 0.5, expected: '≥ 0.5 (50% of avg)' }, // Improved: require decent volume
+        signalScore: { value: signalScore, pass: signalScore >= 0.01, expected: '≥ 0.01' }, // Almost always passes
+        rsi: { value: rsi, pass: rsi >= 5 && rsi <= 95, expected: '5–95' }, // Very wide range
+        rsiSlope: { value: rsiSlope30m, pass: true, expected: 'any' }, // Always passes
+        atr: { value: atrPct, pass: atrPct >= 0.01 && atrPct <= 15.0, expected: '0.01–15.0%' }, // Very wide
+        adx: { value: adx, pass: adx >= 3, expected: '≥ 3' }, // Very low threshold
+        priceSlope: { value: priceSlopePct, pass: true, expected: 'any' }, // Always passes
+        trendSlope1h: { value: trendSlopePct1h, pass: true, expected: 'any' }, // Always passes
+        volumePct: { value: volumePct, pass: volumePct >= 0.1, expected: '≥ 0.1' }, // Very low
         candlePos5m: {
           value: candlePos5m,
-          pass: !['doji_top', 'shooting_star_top'].includes(candlePos5m), // Improved: avoid bearish reversal patterns
-          expected: 'not doji_top or shooting_star_top',
+          pass: true, // Always passes
+          expected: 'any',
         },
       },
       short: {
-        signalScore: { value: signalScore, pass: signalScore >= 0.3, expected: '≥ 0.3' }, // Improved: require meaningful signal
-        rsi: { value: rsi, pass: rsi >= 25 && rsi <= 75, expected: '25–75' }, // Improved: avoid extremes for trend following
-        rsiSlope: { value: rsiSlope30m, pass: rsiSlope30m < 2, expected: '< 2' }, // Improved: RSI should not be rising too fast
-        atr: { value: atrPct, pass: atrPct >= 0.1 && atrPct <= 5.0, expected: '0.1–5.0%' }, // Improved: reasonable volatility range
-        adx: { value: adx, pass: adx >= 15, expected: '≥ 15' }, // Improved: require meaningful trend strength
-        priceSlope: { value: priceSlopePct, pass: priceSlopePct < 0.03, expected: '< 3%' }, // Improved: allow minor rallies
-        trendSlope1h: { value: trendSlopePct1h, pass: trendSlopePct1h < 0.03, expected: '< 3%' }, // Improved: 1h trend should support
-        volumePct: { value: volumePct, pass: volumePct >= 0.5, expected: '≥ 0.5 (50% of avg)' }, // Improved: require decent volume
+        signalScore: { value: signalScore, pass: signalScore >= 0.01, expected: '≥ 0.01' }, // Almost always passes
+        rsi: { value: rsi, pass: rsi >= 5 && rsi <= 95, expected: '5–95' }, // Very wide range
+        rsiSlope: { value: rsiSlope30m, pass: true, expected: 'any' }, // Always passes
+        atr: { value: atrPct, pass: atrPct >= 0.01 && atrPct <= 15.0, expected: '0.01–15.0%' }, // Very wide
+        adx: { value: adx, pass: adx >= 3, expected: '≥ 3' }, // Very low threshold
+        priceSlope: { value: priceSlopePct, pass: true, expected: 'any' }, // Always passes
+        trendSlope1h: { value: trendSlopePct1h, pass: true, expected: 'any' }, // Always passes
+        volumePct: { value: volumePct, pass: volumePct >= 0.1, expected: '≥ 0.1' }, // Very low
         candlePos5m: {
           value: candlePos5m,
-          pass: !['doji_bottom', 'hammer_bottom'].includes(candlePos5m), // Improved: avoid bullish reversal patterns
-          expected: 'not doji_bottom or hammer_bottom',
+          pass: true, // Always passes
+          expected: 'any',
         },
       },
-      longReversal: { // Long position from oversold (reversal trade)
-        signalScore: { value: signalScore, pass: signalScore >= 0.25, expected: '≥ 0.25' }, // Improved: require decent signal
-        rsi: { value: rsi, pass: rsi < 30, expected: '< 30' }, // Oversold condition
-        rsiSlope: { value: rsiSlope30m, pass: rsiSlope30m < 1, expected: '< 1' }, // Improved: RSI should be stabilizing
-        atr: { value: atrPct, pass: atrPct >= 0.1 && atrPct <= 5.0, expected: '0.1–5.0%' }, // Improved: reasonable volatility
-        adx: { value: adx, pass: adx >= 10, expected: '≥ 10' }, // Improved: some trend strength needed
-        adxSlope: { value: adxSlope, pass: adxSlope < 3, expected: '< 3' }, // Improved: ADX not rising too fast
-        divergence: { value: divergenceScore, pass: divergenceScore >= 0.1, expected: '≥ 0.1' }, // Improved: require meaningful divergence
-        priceSlope: { value: priceSlopePct, pass: priceSlopePct > -0.05, expected: '> -5%' }, // Allow some decline
-        trendSlope1h: { value: trendSlopePct1h, pass: trendSlopePct1h > -0.05, expected: '> -5%' }, // 1h should not be too bearish
-        volumePct: { value: volumePct, pass: volumePct >= 0.5, expected: '≥ 0.5' }, // Improved: require decent volume
+      longReversal: { // Long position from oversold (reversal trade) - 🧪 VERY LOOSE
+        signalScore: { value: signalScore, pass: signalScore >= 0.01, expected: '≥ 0.01' }, // Almost always passes
+        rsi: { value: rsi, pass: rsi < 60, expected: '< 60' }, // Very loose oversold (was 30)
+        rsiSlope: { value: rsiSlope30m, pass: true, expected: 'any' }, // Always passes
+        atr: { value: atrPct, pass: atrPct >= 0.01 && atrPct <= 15.0, expected: '0.01–15.0%' }, // Very wide
+        adx: { value: adx, pass: adx >= 3, expected: '≥ 3' }, // Very low (was 10)
+        adxSlope: { value: adxSlope, pass: true, expected: 'any' }, // Always passes
+        divergence: { value: divergenceScore, pass: divergenceScore >= 0.0, expected: '≥ 0.0' }, // Always passes (was 0.1)
+        priceSlope: { value: priceSlopePct, pass: true, expected: 'any' }, // Always passes
+        trendSlope1h: { value: trendSlopePct1h, pass: true, expected: 'any' }, // Always passes
+        volumePct: { value: volumePct, pass: volumePct >= 0.1, expected: '≥ 0.1' }, // Very low (was 0.5)
         candlePos5m: {
           value: candlePos5m,
-          pass: ['bottom', 'anticipation_bottom', 'hammer_bottom', 'doji_bottom'].includes(candlePos5m), // Improved: require bullish reversal pattern
-          expected: 'bottom/anticipation_bottom/hammer_bottom/doji_bottom',
+          pass: true, // Always passes (was specific patterns only)
+          expected: 'any',
         },
       },
-      shortReversal: { // Short position from overbought (reversal trade)
-        signalScore: { value: signalScore, pass: signalScore >= 0.25, expected: '≥ 0.25' }, // Improved: require decent signal
-        rsi: { value: rsi, pass: rsi > 70, expected: '> 70' }, // Overbought condition
-        rsiSlope: { value: rsiSlope30m, pass: rsiSlope30m > -1, expected: '> -1' }, // Improved: RSI should be stabilizing
-        atr: { value: atrPct, pass: atrPct >= 0.1 && atrPct <= 5.0, expected: '0.1–5.0%' }, // Improved: reasonable volatility
-        adx: { value: adx, pass: adx >= 10, expected: '≥ 10' }, // Improved: some trend strength needed
-        adxSlope: { value: adxSlope, pass: adxSlope < 3, expected: '< 3' }, // Improved: ADX not rising too fast
-        divergence: { value: divergenceScore, pass: divergenceScore >= 0.1, expected: '≥ 0.1' }, // Improved: require meaningful divergence
-        priceSlope: { value: priceSlopePct, pass: priceSlopePct < 0.05, expected: '< 5%' }, // Allow some rally
-        trendSlope1h: { value: trendSlopePct1h, pass: trendSlopePct1h < 0.05, expected: '< 5%' }, // 1h should not be too bullish
-        volumePct: { value: volumePct, pass: volumePct >= 0.5, expected: '≥ 0.5' }, // Improved: require decent volume
+      shortReversal: { // Short position from overbought (reversal trade) - 🧪 VERY LOOSE
+        signalScore: { value: signalScore, pass: signalScore >= 0.01, expected: '≥ 0.01' }, // Almost always passes
+        rsi: { value: rsi, pass: rsi > 40, expected: '> 40' }, // Very loose overbought (was 70)
+        rsiSlope: { value: rsiSlope30m, pass: true, expected: 'any' }, // Always passes
+        atr: { value: atrPct, pass: atrPct >= 0.01 && atrPct <= 15.0, expected: '0.01–15.0%' }, // Very wide
+        adx: { value: adx, pass: adx >= 3, expected: '≥ 3' }, // Very low (was 10)
+        adxSlope: { value: adxSlope, pass: true, expected: 'any' }, // Always passes
+        divergence: { value: divergenceScore, pass: divergenceScore >= 0.0, expected: '≥ 0.0' }, // Always passes (was 0.1)
+        priceSlope: { value: priceSlopePct, pass: true, expected: 'any' }, // Always passes
+        trendSlope1h: { value: trendSlopePct1h, pass: true, expected: 'any' }, // Always passes
+        volumePct: { value: volumePct, pass: volumePct >= 0.1, expected: '≥ 0.1' }, // Very low (was 0.5)
         candlePos5m: {
           value: candlePos5m,
-          pass: ['top', 'anticipation_top', 'shooting_star_top', 'doji_top'].includes(candlePos5m), // Improved: require bearish reversal pattern
-          expected: 'top/anticipation_top/shooting_star_top/doji_top',
+          pass: true, // Always passes (was specific patterns only)
+          expected: 'any',
         },
       },
-      bearishlong: { // Long in bearish market (counter-trend, higher risk)
-        signalScore: { value: signalScore, pass: signalScore >= 0.35, expected: '≥ 0.35' }, // Improved: require stronger signal for counter-trend
-        rsi: { value: rsi, pass: rsi >= 20 && rsi <= 50, expected: '20–50' }, // Improved: not too oversold, not neutral
-        rsiSlope: { value: rsiSlope30m, pass: rsiSlope30m > -1, expected: '> -1' }, // Improved: RSI stabilizing
-        atr: { value: atrPct, pass: atrPct >= 0.2 && atrPct <= 4.0, expected: '0.2–4.0%' }, // Improved: need some volatility
-        adx: { value: adx, pass: adx >= 12, expected: '≥ 12' }, // Improved: require trend strength
-        divergence: { value: divergenceScore, pass: divergenceScore >= 0.15, expected: '≥ 0.15' }, // Improved: require strong divergence
-        priceSlope: { value: priceSlopePct, pass: priceSlopePct > -0.04, expected: '> -4%' }, // Improved: not too steep decline
-        trendSlope1h: { value: trendSlopePct1h, pass: trendSlopePct1h > -0.04, expected: '> -4%' }, // Improved: 1h not too bearish
-        volumePct: { value: volumePct, pass: volumePct >= 0.6, expected: '≥ 0.6' }, // Improved: require good volume for counter-trend
+      bearishlong: { // Long in bearish market - 🧪 VERY LOOSE
+        signalScore: { value: signalScore, pass: signalScore >= 0.01, expected: '≥ 0.01' }, // Almost always passes
+        rsi: { value: rsi, pass: rsi >= 5 && rsi <= 95, expected: '5–95' }, // Very wide range
+        rsiSlope: { value: rsiSlope30m, pass: true, expected: 'any' }, // Always passes
+        atr: { value: atrPct, pass: atrPct >= 0.01 && atrPct <= 15.0, expected: '0.01–15.0%' }, // Very wide
+        adx: { value: adx, pass: adx >= 3, expected: '≥ 3' }, // Very low
+        divergence: { value: divergenceScore, pass: divergenceScore >= 0.0, expected: '≥ 0.0' }, // Always passes
+        priceSlope: { value: priceSlopePct, pass: true, expected: 'any' }, // Always passes
+        trendSlope1h: { value: trendSlopePct1h, pass: true, expected: 'any' }, // Always passes
+        volumePct: { value: volumePct, pass: volumePct >= 0.1, expected: '≥ 0.1' }, // Very low
         candlePos5m: {
           value: candlePos5m,
-          pass: ['bottom', 'anticipation_bottom', 'hammer_bottom'].includes(candlePos5m), // Improved: require bullish reversal pattern
-          expected: 'bottom/anticipation_bottom/hammer_bottom',
+          pass: true, // Always passes
+          expected: 'any',
         },
       },
       bullishshort: { // Short in bullish market (counter-trend, higher risk)
@@ -387,18 +387,18 @@ export async function evaluateSignalOnly(
     let confidence: 'low' | 'medium' | 'high' = 'low';
 
     // Priority 1: Sniper entries (trend-following, highest priority)
-    // Only execute if MOS confidence is moderate or strong
-    if (mosDecision === 'long' && failed.long.length === 0 && mosConfidence !== 'weak') {
+    // RELAXED: Allow even weak MOS confidence if signal score is strong enough
+    if (mosDecision === 'long' && failed.long.length === 0 && (mosConfidence !== 'weak' || signalScore >= 0.3)) {
       direction = 'long';
       entryType = 'sniper';
       reason = `${mosReason} + Sniper Long Entry ✅`;
-      confidence = mosConfidence === 'strong' ? 'high' : 'medium';
+      confidence = mosConfidence === 'strong' ? 'high' : (signalScore >= 0.3 ? 'medium' : 'low');
     }
-    if (mosDecision === 'short' && failed.short.length === 0 && mosConfidence !== 'weak') {
+    if (mosDecision === 'short' && failed.short.length === 0 && (mosConfidence !== 'weak' || signalScore >= 0.3)) {
       direction = 'short';
       entryType = 'sniper';
       reason = `${mosReason} + Sniper Short Entry ✅`;
-      confidence = mosConfidence === 'strong' ? 'high' : 'medium';
+      confidence = mosConfidence === 'strong' ? 'high' : (signalScore >= 0.3 ? 'medium' : 'low');
     }
 
     // Priority 2: Reversals (only if sniper didn't trigger and MOS allows)

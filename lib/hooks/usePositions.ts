@@ -67,71 +67,50 @@ export function usePositions() {
   }, [token]);
   
   // Check if positions should be fetched
-  // Fetch positions if there's an active trading session
-  // NOTE: We don't check avantisBalance > 0 because when a position is opened,
-  // all USDC goes into the position as collateral, making wallet balance = $0
-  // The user should still see their active positions even with $0 free balance
+  // ALWAYS fetch positions when user is authenticated - positions may exist from manual trading
+  // on Avantis dashboard or from previous sessions
   const shouldFetchPositions = useCallback(async (): Promise<boolean> => {
     if (!token) return false;
     
-    // Check if there's an active trading session
-    const hasActiveSession = await checkActiveSession();
-    
-    // If there's an active session, always allow fetching positions
-    // Positions contain collateral value even when wallet balance is $0
-    if (hasActiveSession) {
-      return true;
+    // Always allow fetching positions when authenticated
+    // Positions may exist even without an active session (from manual trading or previous sessions)
+    return true;
+  }, [token]); // Only depend on token
+
+  const fetchPositions = useCallback(async (force = false) => {
+    // Authentication is required
+    if (!token) {
+      setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
+      return;
     }
-    
-    // No active session - only fetch if user has deposited funds
-    // This handles the case where user deposited but hasn't started trading yet
-    if (avantisBalance && avantisBalance > 0) {
-      return true;
+
+    // Prevent concurrent fetches (but allow forced fetches)
+    if (fetchInProgressRef.current && !force) {
+      return;
     }
-    
-    return false;
-  }, [token, avantisBalance, checkActiveSession]);
 
-      const fetchPositions = useCallback(async (force = false) => {
-        // Authentication is required
-        if (!token) {
-          setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
-          return;
-        }
-        
-        // Only fetch if user has deposited funds AND started trading
-        if (!force) {
-          const shouldFetch = await shouldFetchPositions();
-          if (!shouldFetch) {
-            setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
-            return;
-          }
-        }
+    fetchInProgressRef.current = true;
+    // Don't set loading state for background refreshes to prevent skeleton flash
+    if (!positionData || force) {
+      setIsLoading(true);
+    }
+    setError(null);
 
-        // Prevent concurrent fetches
-        if (fetchInProgressRef.current && !force) {
-          return;
-        }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 30000);
 
-        fetchInProgressRef.current = true;
-        setIsLoading(true);
-        setError(null);
+      const response = await fetch('/api/positions', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
 
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => {
-            controller.abort();
-          }, 30000); // Increased to 30s timeout
-
-          const response = await fetch('/api/positions', {
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
@@ -139,30 +118,26 @@ export function usePositions() {
       
       const data = await response.json();
       setPositionData(data);
-      retryCountRef.current = 0; // Reset retry count on success
+      retryCountRef.current = 0;
       setError(null);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch positions';
       
-      // Handle AbortError gracefully
       if (err instanceof Error && err.name === 'AbortError') {
         setError('Request timeout - please check your connection');
-        setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
       } else {
-        // Retry logic for network errors (but not abort errors)
         if (retryCountRef.current < maxRetries && errorMessage.includes('fetch')) {
           retryCountRef.current++;
           setTimeout(() => fetchPositions(true), 2000 * retryCountRef.current);
         } else {
           setError(errorMessage);
-          setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
         }
       }
     } finally {
       setIsLoading(false);
       fetchInProgressRef.current = false;
     }
-  }, [token, shouldFetchPositions]); // Include shouldFetchPositions dependency
+  }, [token]); // Only depend on token
 
   const closePositionInProgressRef = useRef<Set<string>>(new Set());
   const closeAllInProgressRef = useRef(false);
@@ -300,22 +275,25 @@ export function usePositions() {
         
         // Check conditions and fetch if met (async)
         let cancelled = false;
-        shouldFetchPositions().then(shouldFetch => {
-          if (cancelled) return;
-          
-          if (!shouldFetch) {
-            setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
-            return;
+        const initialFetch = async () => {
+          try {
+            const shouldFetch = await shouldFetchPositions();
+            if (cancelled) return;
+            
+            if (!shouldFetch) {
+              setPositionData({ positions: [], totalPnL: 0, openPositions: 0 });
+              return;
+            }
+            
+            // Initial fetch (only if conditions are met)
+            await fetchPositions();
+          } catch (err) {
+            // Silently handle errors
           }
-          
-          // Initial fetch (only if conditions are met)
-          fetchPositions();
-        }); 
-        
-        return () => {
-          cancelled = true;
         };
-
+        
+        initialFetch();
+        
         let interval: NodeJS.Timeout | null = null;
 
         const startPolling = () => {
@@ -326,17 +304,17 @@ export function usePositions() {
             return;
           }
 
-          // Much slower polling to reduce server load and prevent conflicts
-          // Only poll every 45 seconds when no positions, 20 seconds when positions exist
-          const pollInterval = positionData && positionData.openPositions > 0 ? 20000 : 45000;
-          interval = setInterval(() => {
-            // Only fetch if we have a token, conditions are met, and not already in progress
-            if (token && !fetchInProgressRef.current) {
-              shouldFetchPositions().then(shouldFetch => {
-                if (shouldFetch) {
-                  fetchPositions();
-                }
-              });
+          // Poll every 10 seconds when positions exist (for live PnL updates)
+          // Poll every 30 seconds when no positions (just checking for new positions)
+          const pollInterval = positionData && positionData.openPositions > 0 ? 10000 : 30000;
+          interval = setInterval(async () => {
+            // Only fetch if we have a token and not already in progress
+            if (token && !fetchInProgressRef.current && !document.hidden) {
+              try {
+                await fetchPositions();
+              } catch (err) {
+                // Silently handle errors
+              }
             }
           }, pollInterval);
         };
@@ -354,27 +332,31 @@ export function usePositions() {
     }
     
     // Pause polling when tab is not visible to save resources
-    const handleVisibilityChange = () => {
+    const handleVisibilityChange = async () => {
       if (document.hidden) {
         stopPolling();
       } else if (token) {
         // Only resume if we have a token and conditions are met
-        shouldFetchPositions().then(shouldFetch => {
+        try {
+          const shouldFetch = await shouldFetchPositions();
           if (shouldFetch) {
-            fetchPositions(true); // Force refresh when tab becomes visible
+            await fetchPositions(true); // Force refresh when tab becomes visible
             startPolling();
           }
-        });
+        } catch (err) {
+          // Silently handle errors
+        }
       }
     };
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     
     return () => {
+      cancelled = true;
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [fetchPositions, positionData?.openPositions, token, shouldFetchPositions]); // Include shouldFetchPositions dependency
+  }, [token]); // Only depend on token to prevent infinite loops
 
   return {
     positionData,

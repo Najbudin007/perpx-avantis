@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useTrading } from './useTrading';
 import { usePositions } from './usePositions';
 import { useTradingFee } from './useTradingFee';
@@ -30,7 +30,7 @@ export function useTradingSession() {
   const { startTrading: startTradingAPI, stopTrading: stopTradingAPI, getTradingSession, getTradingSessions } = useTrading();
   const { positionData, fetchPositions } = usePositions();
   const { payTradingFee, isPayingFee } = useTradingFee();
-  const { refreshBalances, avantisBalance } = useIntegratedWallet();
+  const { refreshBalances, avantisBalance, primaryWallet, tradingWallet, tradingWalletAddress, baseAccountAddress } = useIntegratedWallet();
   
   const [tradingSession, setTradingSession] = useState<TradingSessionState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,25 +39,50 @@ export function useTradingSession() {
   const [positionWarning, setPositionWarning] = useState<string | null>(null);
   const [feePending, setFeePending] = useState<{ amount: number; paid: boolean } | null>(null);
 
+  // Use refs to prevent infinite loops
+  const tradingSessionRef = useRef(tradingSession);
+  const positionDataRef = useRef(positionData);
+  
+  // Update refs when values change
+  useEffect(() => {
+    tradingSessionRef.current = tradingSession;
+  }, [tradingSession]);
+  
+  useEffect(() => {
+    positionDataRef.current = positionData;
+  }, [positionData]);
+  
   // Refresh session status from API - also tries to restore session if not in state
   const refreshSessionStatus = useCallback(async (forceRestore: boolean = false) => {
+    const currentSession = tradingSessionRef.current;
+    const currentPositionData = positionDataRef.current;
+    
     // If we have a session, refresh it
-    if (tradingSession && !forceRestore) {
+    if (currentSession && !forceRestore) {
       try {
-        const session = await getTradingSession(tradingSession.id);
+        const session = await getTradingSession(currentSession.id);
         if (session) {
           // Only update if session is actually running
           if (session.status === 'running') {
-            setTradingSession(prev => prev ? {
-              ...prev,
-              sessionId: prev.sessionId || prev.id, // Preserve sessionId
-              status: session.status,
-              totalPnL: session.totalPnL,
-              positions: session.positions?.length || 0,
-              pnl: session.totalPnL,
-              openPositions: session.positions?.length || 0,
-              cycle: (session as any).cycle || prev.cycle || 0,
-            } : null);
+            setTradingSession(prev => {
+              if (!prev) return null;
+              // Only update if something actually changed to prevent loops
+              if (prev.status === session.status && 
+                  prev.totalPnL === session.totalPnL &&
+                  prev.openPositions === (session.positions?.length || 0)) {
+                return prev; // No change, return same object
+              }
+              return {
+                ...prev,
+                sessionId: prev.sessionId || prev.id, // Preserve sessionId
+                status: session.status,
+                totalPnL: session.totalPnL,
+                positions: session.positions?.length || 0,
+                pnl: session.totalPnL,
+                openPositions: session.positions?.length || 0,
+                cycle: (session as any).cycle || prev.cycle || 0,
+              };
+            });
           } else if (session.status === 'error' || session.status === 'completed' || session.status === 'stopped') {
             // Only clear if session is definitively ended (not just temporarily unavailable)
             setTradingSession(null);
@@ -87,11 +112,11 @@ export function useTradingSession() {
             sessionId: activeSession.id, // Ensure sessionId is set
             status: activeSession.status,
             startTime: activeSession.startTime,
-            totalPnL: activeSession.totalPnL || positionData?.totalPnL || 0,
-            positions: (activeSession.positions && Array.isArray(activeSession.positions) ? activeSession.positions.length : activeSession.positions) || positionData?.openPositions || 0,
+            totalPnL: activeSession.totalPnL || currentPositionData?.totalPnL || 0,
+            positions: (activeSession.positions && Array.isArray(activeSession.positions) ? activeSession.positions.length : activeSession.positions) || currentPositionData?.openPositions || 0,
             cycle: 0,
-            openPositions: positionData?.openPositions || 0,
-            pnl: activeSession.totalPnL || positionData?.totalPnL || 0,
+            openPositions: currentPositionData?.openPositions || 0,
+            pnl: activeSession.totalPnL || currentPositionData?.totalPnL || 0,
             config: activeSession.config ? {
               profitGoal: activeSession.config.profitGoal || 0,
               maxBudget: (activeSession.config as any).maxBudget || (activeSession.config as any).totalBudget || 0,
@@ -106,19 +131,19 @@ export function useTradingSession() {
           setTradingSession(sessionState);
         } else {
           // No active session found - clear any stale session state
-          if (tradingSession) {
+          if (currentSession) {
             setTradingSession(null);
           }
         }
       } catch (err) {
         // Failed to restore session
         // On error, clear session to avoid showing stale data
-        if (tradingSession) {
+        if (currentSession) {
           setTradingSession(null);
         }
       }
     }
-  }, [tradingSession, getTradingSession, getTradingSessions, positionData]);
+  }, [getTradingSession, getTradingSessions]); // Removed tradingSession and positionData from deps, using refs instead
 
   // Clear current session
   const clearSession = useCallback(() => {
@@ -135,6 +160,9 @@ export function useTradingSession() {
     maxPerSession?: number;
     leverage?: number;
     lossThreshold?: number;
+    walletAddress?: string;
+    avantisApiWallet?: string;
+    hyperliquidApiWallet?: string;
   }, onProgress?: (step: string, message: string) => void) => {
     setIsLoading(true);
     setError(null);
@@ -153,18 +181,90 @@ export function useTradingSession() {
         ? config.leverage 
         : calculateLeverageFromBalance(budget, config.leverage);
       
-      // Step 2: Start trading session (this should return quickly)
+      // Step 2: Get trading wallet with private key from API
+      onProgress?.('session', 'Retrieving wallet credentials...');
+      let walletWithKey: any = null;
+      
+      try {
+        const { ClientWalletService } = await import('@/lib/services/ClientWalletService');
+        const getToken = () => {
+          if (typeof window !== 'undefined') {
+            return localStorage.getItem('web_auth_token') || '';
+          }
+          return '';
+        };
+        const clientWalletService = new ClientWalletService(getToken);
+        walletWithKey = await clientWalletService.getPrimaryTradingWalletWithKey();
+        
+        if (walletWithKey?.privateKey) {
+          console.log(`[useTradingSession] ✅ Retrieved wallet with private key: ${walletWithKey.address}`);
+        } else {
+          console.warn(`[useTradingSession] ⚠️ No wallet with private key found, attempting to create one...`);
+          
+          // Try to create a wallet if it doesn't exist
+          try {
+            const createResult = await clientWalletService.createWallet({ chain: 'ethereum' });
+            if (createResult.success && createResult.wallet) {
+              // Now retrieve the wallet with key
+              walletWithKey = await clientWalletService.getPrimaryTradingWalletWithKey();
+              if (walletWithKey?.privateKey) {
+                console.log(`[useTradingSession] ✅ Created and retrieved new wallet: ${walletWithKey.address}`);
+              }
+            } else {
+              throw new Error(createResult.error || 'Failed to create wallet');
+            }
+          } catch (createError) {
+            console.error(`[useTradingSession] ❌ Failed to create wallet:`, createError);
+            throw new Error('Trading wallet not found and could not be created. Please ensure you have a wallet set up.');
+          }
+        }
+      } catch (walletError) {
+        console.error(`[useTradingSession] ❌ Failed to retrieve wallet with key:`, walletError);
+        throw new Error(`Failed to retrieve wallet credentials: ${walletError instanceof Error ? walletError.message : 'Unknown error'}`);
+      }
+      
+      // Step 3: Start trading session (this should return quickly)
       onProgress?.('session', 'Starting trading session...');
       
       try {
+        // Wallet details (prefer explicit config, then wallet with key, then trading wallet, then base account)
+        const walletAddress = config.walletAddress || walletWithKey?.address || tradingWallet?.address || tradingWalletAddress || baseAccountAddress || primaryWallet?.address || '';
+        const avantisPk = config.avantisApiWallet || walletWithKey?.privateKey || (tradingWallet as any)?.privateKey || (primaryWallet as any)?.privateKey || process.env.NEXT_PUBLIC_AVANTIS_API_WALLET || process.env.NEXT_PUBLIC_AVANTIS_PRIVATE_KEY;
+        const hyperliquidPk = config.hyperliquidApiWallet || process.env.NEXT_PUBLIC_HYPERLIQUID_PK;
+
+        // Log wallet details for debugging (without exposing full private key)
+        console.log(`[useTradingSession] Starting session with:`, {
+          walletAddress,
+          hasAvantisKey: !!avantisPk,
+          hasHyperliquidKey: !!hyperliquidPk,
+          budget,
+          leverage: calculatedLeverage
+        });
+
+        if (!walletAddress || !avantisPk) {
+          const missingItems = [];
+          if (!walletAddress) missingItems.push('wallet address');
+          if (!avantisPk) missingItems.push('private key');
+          
+          throw new Error(
+            `Cannot start trading: Missing ${missingItems.join(' and ')}. ` +
+            `Please ensure you have a trading wallet set up. ` +
+            `Try refreshing the page or contact support if the issue persists.`
+          );
+        }
+
         const session = await startTradingAPI({
           totalBudget: budget,
           profitGoal: config.profitGoal || config.targetProfit || 10,
           maxPositions: config.maxPerSession || 1,
           leverage: calculatedLeverage, // Balance-based: $10-20=2x-3x, $20+=5x default
-          lossThreshold: config.lossThreshold || 10
+          lossThreshold: config.lossThreshold || 10,
+          walletAddress,
+          avantisApiWallet: avantisPk,
+          hyperliquidApiWallet: hyperliquidPk,
         });
         
+        console.log(`[useTradingSession] ✅ Session successfully started: ${session.id}`);
         onProgress?.('session', `✅ Session started: ${session.id.slice(0, 8)}...`);
 
         // Create session state
@@ -234,12 +334,19 @@ export function useTradingSession() {
     }
   }, [tradingSession, stopTradingAPI]);
 
-  // Pay fee when first position opens
-  const payFeeOnPositionOpen = useCallback(async (tradingAmount: number) => {
-    if (feePending?.paid) {
-      return; // Fee already paid
+  // Track previous position count to detect new positions
+  const previousPositionCountRef = useRef<number>(0);
+  const checkPositionsInProgressRef = useRef<boolean>(false);
+  const feePaymentInProgressRef = useRef<boolean>(false);
+
+  // Pay fee when first position opens (using ref to avoid infinite loop)
+  const payFeeOnPositionOpen = useCallback(async (tradingAmount: number, currentFeePending: { amount: number; paid: boolean } | null) => {
+    if (currentFeePending?.paid || feePaymentInProgressRef.current) {
+      return; // Fee already paid or payment in progress
     }
 
+    feePaymentInProgressRef.current = true;
+    
     try {
       console.log(`[useTradingSession] Position opened! Paying fee: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
       const feeResult = await payTradingFee(tradingAmount);
@@ -249,11 +356,6 @@ export function useTradingSession() {
         setFeePaidTime(new Date());
         setPositionWarning(null);
         console.log(`[useTradingSession] ✅ Fee paid successfully after position opened: ${feeResult.amount} ${feeResult.currency} (tx: ${feeResult.transactionHash})`);
-        
-        // Refresh balances after fee payment
-        refreshBalances(true).catch((refreshError) => {
-          console.warn('[useTradingSession] Failed to refresh balances after fee payment:', refreshError);
-        });
       } else {
         console.error(`[useTradingSession] ❌ Failed to pay fee after position opened: ${feeResult.error}`);
         setPositionWarning(`⚠️ Position opened but fee payment failed: ${feeResult.error}`);
@@ -261,48 +363,55 @@ export function useTradingSession() {
     } catch (error) {
       console.error(`[useTradingSession] ❌ Error paying fee after position opened:`, error);
       setPositionWarning(`⚠️ Position opened but fee payment error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      feePaymentInProgressRef.current = false;
     }
-  }, [feePending, payTradingFee, refreshBalances]);
+  }, [payTradingFee]);
 
-  // Track previous position count to detect new positions
-  const previousPositionCountRef = useRef<number>(0);
-
-  // Update session with position data
+  // Update session with position data - FIXED to prevent infinite loop
   useEffect(() => {
-    if (tradingSession && positionData) {
-      const previousPositions = previousPositionCountRef.current;
-      const currentPositions = positionData.openPositions || 0;
-      
+    // Only update if we have both session and position data
+    if (!tradingSession || !positionData) return;
+    
+    const previousPositions = previousPositionCountRef.current;
+    const currentPositions = positionData.openPositions || 0;
+    
+    // Only update if position count or PnL actually changed
+    const pnlChanged = Math.abs((tradingSession.totalPnL || 0) - (positionData.totalPnL || 0)) > 0.001;
+    const positionsChanged = tradingSession.openPositions !== currentPositions;
+    
+    if (pnlChanged || positionsChanged) {
       setTradingSession(prev => prev ? {
         ...prev,
-        sessionId: prev.sessionId || prev.id, // Preserve sessionId when updating
+        sessionId: prev.sessionId || prev.id,
         totalPnL: positionData.totalPnL || 0,
         pnl: positionData.totalPnL || 0,
         openPositions: currentPositions,
         positions: currentPositions,
-        cycle: (prev.cycle || 0) + 1
+        // Don't increment cycle on every update to prevent re-renders
       } : null);
-      
-      // Pay fee when first position opens (transition from 0 to >0)
-      if (currentPositions > 0 && previousPositions === 0 && feePending && !feePending.paid) {
-        const tradingAmount = tradingSession.config?.maxBudget || tradingSession.config?.totalBudget || feePending.amount;
-        console.log(`[useTradingSession] First position opened! Paying fee for amount: $${tradingAmount}`);
-        payFeeOnPositionOpen(tradingAmount);
-      }
-      
-      // Update previous position count
-      previousPositionCountRef.current = currentPositions;
-      
-      // Clear warning if positions opened
-      if (currentPositions > 0 && positionWarning) {
-        setPositionWarning(null);
-      }
     }
-  }, [positionData, positionWarning, tradingSession, feePending, payFeeOnPositionOpen]);
+    
+    // Pay fee when first position opens (transition from 0 to >0)
+    if (currentPositions > 0 && previousPositions === 0 && feePending && !feePending.paid) {
+      const tradingAmount = tradingSession.config?.maxBudget || tradingSession.config?.totalBudget || feePending.amount;
+      console.log(`[useTradingSession] First position opened! Paying fee for amount: $${tradingAmount}`);
+      payFeeOnPositionOpen(tradingAmount, feePending);
+    }
+    
+    // Update previous position count
+    previousPositionCountRef.current = currentPositions;
+    
+    // Clear warning if positions opened
+    if (currentPositions > 0 && positionWarning) {
+      setPositionWarning(null);
+    }
+  }, [positionData?.openPositions, positionData?.totalPnL]); // Only depend on specific values, not entire objects
 
       // Auto-refresh session status periodically
       useEffect(() => {
-        if (!tradingSession || tradingSession.status !== 'running') return;
+        const currentSession = tradingSessionRef.current;
+        if (!currentSession || currentSession.status !== 'running') return;
 
         const interval = setInterval(() => {
           refreshSessionStatus().catch(err => {
@@ -312,7 +421,7 @@ export function useTradingSession() {
         }, 15000); // Refresh every 15 seconds (less frequent to reduce flickering)
 
         return () => clearInterval(interval);
-      }, [tradingSession?.id, tradingSession?.status]); // Depend on id and status to prevent unnecessary re-runs
+      }, [tradingSession?.id, tradingSession?.status, refreshSessionStatus]); // Include refreshSessionStatus but it's now stable
 
       // Monitor for positions opening (no fee payment needed - fee is paid after position opens)
       useEffect(() => {
@@ -321,20 +430,28 @@ export function useTradingSession() {
         }
 
         const checkPositions = async () => {
-          await fetchPositions(true);
-          const elapsedSeconds = feePending ? Math.floor((Date.now() - (tradingSession.startTime?.getTime() || Date.now())) / 1000) : 0;
+          // Use a ref to prevent concurrent calls
+          if (checkPositionsInProgressRef.current) return;
+          checkPositionsInProgressRef.current = true;
           
-          // Show status messages while waiting for first position
-          if (positionData?.openPositions === 0 && feePending && !feePending.paid) {
-            if (elapsedSeconds >= 120) {
-              setPositionWarning('⚠️ Still waiting for position to open after 2 minutes. Bot is scanning markets...');
-            } else if (elapsedSeconds >= 60) {
-              setPositionWarning('⏳ Waiting for position to open. Bot is analyzing market conditions...');
-            } else if (elapsedSeconds >= 30) {
-              setPositionWarning('⏳ Bot is scanning markets for entry opportunities...');
+          try {
+            await fetchPositions(true);
+            const elapsedSeconds = feePending ? Math.floor((Date.now() - (tradingSession.startTime?.getTime() || Date.now())) / 1000) : 0;
+            
+            // Show status messages while waiting for first position
+            if (positionData?.openPositions === 0 && feePending && !feePending.paid) {
+              if (elapsedSeconds >= 120) {
+                setPositionWarning('⚠️ Still waiting for position to open after 2 minutes. Bot is scanning markets...');
+              } else if (elapsedSeconds >= 60) {
+                setPositionWarning('⏳ Waiting for position to open. Bot is analyzing market conditions...');
+              } else if (elapsedSeconds >= 30) {
+                setPositionWarning('⏳ Bot is scanning markets for entry opportunities...');
+              }
+            } else if (positionData && positionData.openPositions > 0) {
+              setPositionWarning(null);
             }
-          } else if (positionData && positionData.openPositions > 0) {
-            setPositionWarning(null);
+          } finally {
+            checkPositionsInProgressRef.current = false;
           }
         };
 
@@ -343,7 +460,7 @@ export function useTradingSession() {
         const interval = setInterval(checkPositions, 15000);
 
         return () => clearInterval(interval);
-      }, [tradingSession, positionData, fetchPositions, feePending]);
+      }, [tradingSession?.id, tradingSession?.status, feePending?.paid, positionData?.openPositions]); // Removed fetchPositions from deps
 
   return {
     tradingSession,

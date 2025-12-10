@@ -291,16 +291,42 @@ export async function POST(request: NextRequest) {
     
     console.log(`[API] [${requestId}] 📡 Calling trading engine at:`, tradingEngineEndpoint);
     addLog(requestId, 'Calling trading engine', { url: tradingEngineEndpoint })
-    console.log(`[API] [${requestId}] Request payload (private key masked):`, {
+    
+    // Prepare request payload
+    const requestPayload = {
       maxBudget: config.totalBudget || config.investmentAmount || config.maxBudget,
       profitGoal: config.profitGoal || config.targetProfit,
       maxPerSession: config.maxPositions || config.maxPerSession || 1,
       lossThreshold: config.lossThreshold || 10,
-      avantisApiWallet: privateKey ? `${privateKey.slice(0, 10)}...${privateKey.slice(-4)}` : 'MISSING',
-      userFid: authContext.context === 'farcaster' ? authContext.fid : undefined,
-      webUserId: authContext.context === 'web' ? authContext.webUserId : undefined,
-      walletAddress: walletAddress,
+      avantisApiWallet: privateKey, // Private key for Avantis trading
+      userFid: authContext.context === 'farcaster' ? authContext.fid : undefined, // FID for Farcaster users
+      userPhoneNumber: authContext.context === 'web' ? undefined : undefined, // Not used for web users
+      webUserId: authContext.context === 'web' ? authContext.webUserId : undefined, // Web user ID
+      walletAddress: walletAddress, // Trading wallet address
+    };
+    
+    console.log(`[API] [${requestId}] Request payload (private key masked):`, {
+      ...requestPayload,
+      avantisApiWallet: privateKey ? `${privateKey.slice(0, 10)}...${privateKey.slice(-4)} (length: ${privateKey.length})` : 'MISSING',
     });
+    
+    // Validate critical fields before sending
+    if (!requestPayload.avantisApiWallet) {
+      console.error(`[API] [${requestId}] ❌ CRITICAL: Private key is MISSING in request payload!`);
+      console.error(`[API] [${requestId}] ❌ This will cause positions to NOT open!`);
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Private key is missing. Cannot start trading session without private key.' 
+      }, { status: 400 });
+    }
+    
+    if (!requestPayload.walletAddress) {
+      console.error(`[API] [${requestId}] ❌ CRITICAL: Wallet address is MISSING in request payload!`);
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Wallet address is missing. Cannot start trading session without wallet address.' 
+      }, { status: 400 });
+    }
     
     let response;
     try {
@@ -309,17 +335,7 @@ export async function POST(request: NextRequest) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          maxBudget: config.totalBudget || config.investmentAmount || config.maxBudget,
-          profitGoal: config.profitGoal || config.targetProfit,
-          maxPerSession: config.maxPositions || config.maxPerSession || 1,
-          lossThreshold: config.lossThreshold || 10,
-          avantisApiWallet: privateKey, // Private key for Avantis trading
-          userFid: authContext.context === 'farcaster' ? authContext.fid : undefined, // FID for Farcaster users
-          userPhoneNumber: authContext.context === 'web' ? undefined : undefined, // Not used for web users
-          webUserId: authContext.context === 'web' ? authContext.webUserId : undefined, // Web user ID
-          walletAddress: walletAddress, // Trading wallet address
-        }),
+        body: JSON.stringify(requestPayload),
         // Add timeout to prevent hanging
         signal: AbortSignal.timeout(30000) // 30 second timeout
       });

@@ -245,8 +245,10 @@ async def prepare_approve_usdc_transaction(
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
         # USDC token address from config
+        # Use avantis_usdc_spender_address (TradingCallbacks) - this is the contract
+        # that actually calls transferFrom, NOT the Trading contract!
         usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender_address = Web3.to_checksum_address(settings.avantis_trading_contract_address)
+        spender_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
         
         # Convert amount to wei (USDC has 6 decimals)
         if amount == 0:

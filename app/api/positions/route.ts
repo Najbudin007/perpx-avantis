@@ -84,24 +84,36 @@ export async function GET(request: NextRequest) {
     
     console.log(`[API] Getting positions for ${authContext.context} user:`, authContext.fid || authContext.webUserId)
     console.log('[API] Using wallet address:', wallet.address)
+    console.log('[API] Wallet private key length:', wallet.privateKey?.length || 0)
 
     // Try to get positions from trading engine first
     const tradingEngineUrl = process.env.TRADING_ENGINE_URL || 'http://localhost:3001'
     
     try {
-      console.log(`[API] Fetching positions from trading engine: ${tradingEngineUrl}/api/positions`)
-      const tradingResponse = await fetch(`${tradingEngineUrl}/api/positions?privateKey=${encodeURIComponent(wallet.privateKey)}`, {
+      const url = `${tradingEngineUrl}/api/positions?privateKey=${encodeURIComponent(wallet.privateKey)}`
+      console.log(`[API] Fetching positions from: ${tradingEngineUrl}/api/positions`)
+      console.log(`[API] Full URL (masked): ${url.substring(0, 60)}...`)
+      
+      // Increase timeout to 60 seconds for position fetching
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000)
+      
+      const tradingResponse = await fetch(url, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-        }
+        },
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
       
       console.log(`[API] Trading engine response status: ${tradingResponse.status}`)
       
       if (tradingResponse.ok) {
         const tradingData = await tradingResponse.json()
         console.log(`[API] Trading engine returned ${tradingData.openPositions || 0} positions`)
+        console.log(`[API] Position data:`, JSON.stringify(tradingData.positions?.slice(0, 2) || []))
         return NextResponse.json({
           positions: tradingData.positions || [],
           totalPnL: tradingData.totalPnL || 0,
@@ -112,7 +124,11 @@ export async function GET(request: NextRequest) {
         console.error(`[API] Trading engine error: ${errorText}`)
       }
     } catch (tradingError) {
-      console.error('[API] Trading engine not available:', tradingError)
+      if (tradingError instanceof Error && tradingError.name === 'AbortError') {
+        console.error('[API] Trading engine timeout after 60s')
+      } else {
+        console.error('[API] Trading engine not available:', tradingError)
+      }
     }
 
     // Fallback: Fetch positions directly from Avantis

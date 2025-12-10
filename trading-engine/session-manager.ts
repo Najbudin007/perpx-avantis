@@ -66,9 +66,17 @@ export class TradingSessionManager {
 
     this.sessions.set(sessionId, session);
     
-    console.log(`[SESSION_MANAGER] Starting session ${sessionId} with config:`, config);
+    console.log(`[SESSION_MANAGER] Starting session ${sessionId} with config:`, {
+      ...config,
+      privateKey: config.privateKey ? `${config.privateKey.slice(0, 10)}...${config.privateKey.slice(-4)}` : 'MISSING'
+    });
     console.log(`[SESSION_MANAGER] Trading session ${sessionId} with wallet ${config.walletAddress}`);
-
+    console.log(`[SESSION_MANAGER] Private key check:`, {
+      hasPrivateKey: !!config.privateKey,
+      privateKeyLength: config.privateKey?.length || 0,
+      botConfigHasPrivateKey: !!botConfig.privateKey
+    });
+    
     // Start monitoring the session immediately
     this.startSessionMonitoring(sessionId);
     

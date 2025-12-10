@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Base Mainnet: 0x44914408af82bC9983bbb330e3578E1105e11d4e
     avantis_trading_contract_address: Optional[str] = "0x44914408af82bC9983bbb330e3578E1105e11d4e"
 
+    # TradingCallbacks contract (THIS is where USDC approval must go!)
+    # The Trading contract delegates to TradingCallbacks which does the actual USDC transferFrom.
+    # Base Mainnet: 0x0C16ff40065Cc3Ab4bc55B60E447504AFB9C7970
+    avantis_usdc_spender_address: Optional[str] = "0x0C16ff40065Cc3Ab4bc55B60E447504AFB9C7970"
+
     # TradingStorage contract (used for reading openTrades, positions)
     # Base Mainnet: 0x8a311D7048c35985aa31C131B9A13e03a5f7422d
     avantis_trading_storage_contract_address: Optional[str] = "0x8a311D7048c35985aa31C131B9A13e03a5f7422d"

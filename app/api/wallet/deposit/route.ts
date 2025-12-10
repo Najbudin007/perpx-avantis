@@ -95,6 +95,11 @@ export async function POST(request: NextRequest) {
     }
 
     const destination = tradingWallet.address
+    
+    // CRITICAL: Log deposit preparation to track all fund movements
+    console.log(`[API/DEPOSIT] Preparing deposit: ${amount} ${asset} from ${fromAddress} to ${destination}`)
+    console.log(`[API/DEPOSIT] This is a USER-INITIATED deposit via /api/wallet/deposit endpoint`)
+    console.log(`[API/DEPOSIT] Trading wallet address: ${destination}`)
     let transaction: { from: string; to: string; value: string; data: string; gas?: string }
 
     try {

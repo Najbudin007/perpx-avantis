@@ -1,11 +1,13 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Card } from '@/components/ui/card'
 import { usePositions } from '@/lib/hooks/usePositions'
 import { useTradingSession } from '@/lib/hooks/useTradingSession'
 import { useTradingActivityLogs } from '@/lib/hooks/useTradingActivityLogs'
 import { useIntegratedWallet } from '@/lib/wallet/IntegratedWalletContext'
+import { useTrading } from '@/lib/hooks/useTrading'
+import { useAuth } from '@/lib/auth/AuthContext'
 import { LiveTradingLogModal } from './LiveTradingLogModal'
 
 interface FloatingLiveCardProps {
@@ -20,19 +22,50 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
   const { tradingSession, feePending, feePaidTime } = useTradingSession()
   const { avantisBalance } = useIntegratedWallet()
   const { logs } = useTradingActivityLogs()
+  const { getTradingSessions } = useTrading()
+  const { token } = useAuth()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isVisible, setIsVisible] = useState(true)
+  const [hasActiveSession, setHasActiveSession] = useState(false)
+  const [activeSessionFromAPI, setActiveSessionFromAPI] = useState<any>(null)
   
-  // Hide if no active session
-  if (!tradingSession || tradingSession.status !== 'running') {
+  // Check for active sessions from API as well
+  useEffect(() => {
+    const checkActiveSessions = async () => {
+      if (!token) return
+      
+      try {
+        const sessions = await getTradingSessions()
+        const active = sessions.find(s => s.status === 'running')
+        setHasActiveSession(!!active)
+        setActiveSessionFromAPI(active || null)
+      } catch (err) {
+        // Silently fail
+      }
+    }
+    
+    checkActiveSessions()
+    const interval = setInterval(checkActiveSessions, 10000) // Check every 10 seconds
+    
+    return () => clearInterval(interval)
+  }, [token, getTradingSessions])
+  
+  // Show if there's an active session (from state or API)
+  const shouldShow = (tradingSession && tradingSession.status === 'running') || hasActiveSession
+  
+  if (!shouldShow || !isVisible) {
     return null
   }
   
-  if (!isVisible) return null
+  // Use session from state if available, otherwise use API session
+  const sessionToDisplay = tradingSession || activeSessionFromAPI
 
   // Get recent activity logs (last 3)
   const recentLogs = logs.slice(-3)
   const latestLog = logs[logs.length - 1]
+  
+  // Get session ID from either source
+  const sessionId = sessionToDisplay?.sessionId || sessionToDisplay?.id || 'Active'
   
   return (
     <>
@@ -70,7 +103,7 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">Session:</span>
               <span className="text-white font-mono">
-                {tradingSession.sessionId?.slice(-6) || 'Active'}
+                {typeof sessionId === 'string' ? sessionId.slice(-6) : 'Active'}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -98,44 +131,72 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">Positions:</span>
               <span className="text-white font-semibold">
-                {positionData?.openPositions || 0}
+                {positionData?.openPositions || sessionToDisplay?.openPositions || sessionToDisplay?.positions || 0}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">PnL:</span>
               <span className={`font-semibold ${
-                (positionData?.totalPnL || 0) >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'
+                ((positionData?.totalPnL ?? sessionToDisplay?.totalPnL ?? 0) >= 0) ? 'text-[#27c47d]' : 'text-[#ef4444]'
               }`}>
-                ${(positionData?.totalPnL || 0).toFixed(2)}
+                ${(positionData?.totalPnL ?? sessionToDisplay?.totalPnL ?? 0).toFixed(2)}
               </span>
             </div>
           </div>
 
-          {/* Recent Activity Logs */}
+          {/* Trading Status & Activity */}
           <div className="mt-2 pt-2 border-t border-[#262626]">
-            <div className="space-y-1.5 max-h-[80px] overflow-y-auto">
-              {recentLogs.length > 0 ? (
-                recentLogs.map((log) => (
-                  <div key={log.id} className="flex items-start space-x-1.5 text-[10px]">
-                    <span className={`mt-0.5 ${
-                      log.type === 'position_success' ? 'text-[#27c47d]' :
-                      log.type === 'position_failed' ? 'text-[#ef4444]' :
-                      log.type === 'indicator' ? 'text-[#8759ff]' :
-                      log.type === 'cycle' ? 'text-[#facc15]' :
-                      'text-[#9ca3af]'
-                    }`}>
-                      {log.type === 'position_success' ? '✅' :
-                       log.type === 'position_failed' ? '❌' :
-                       log.type === 'indicator' ? '📊' :
-                       log.type === 'cycle' ? '🔄' :
-                       '●'}
-                    </span>
-                    <span className="text-[#9ca3af] flex-1 truncate">
-                      {log.message.length > 35 ? log.message.substring(0, 35) + '...' : log.message}
+            <div className="space-y-1.5 text-[10px]">
+              {/* Show important status messages */}
+              {positionData && positionData.openPositions === 0 && tradingSession && (
+                <div className="space-y-1">
+                  <div className="flex items-start space-x-1.5">
+                    <span className="text-[#facc15]">🔍</span>
+                    <span className="text-[#facc15] flex-1">
+                      Scanning markets...
                     </span>
                   </div>
-                ))
-              ) : (
+                  <div className="flex items-start space-x-1.5">
+                    <span className="text-[#8759ff]">📊</span>
+                    <span className="text-[#9ca3af] flex-1">
+                      Analyzing BTC, ETH signals
+                    </span>
+                  </div>
+                  {feePending && !feePending.paid && (
+                    <div className="flex items-start space-x-1.5">
+                      <span className="text-[#27c47d]">💰</span>
+                      <span className="text-[#27c47d] flex-1 text-[9px]">
+                        Fee will be paid after 1st position
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-start space-x-1.5 mt-2">
+                    <span className="text-[#9ca3af]">ℹ️</span>
+                    <span className="text-[#9ca3af] flex-1 text-[9px]">
+                      Waiting for entry signal...
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {positionData && positionData.openPositions > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-start space-x-1.5">
+                    <span className="text-[#27c47d]">✅</span>
+                    <span className="text-[#27c47d] flex-1">
+                      {positionData.openPositions} position{positionData.openPositions > 1 ? 's' : ''} active
+                    </span>
+                  </div>
+                  <div className="flex items-start space-x-1.5">
+                    <span className="text-[#8759ff]">📈</span>
+                    <span className="text-[#9ca3af] flex-1">
+                      Monitoring for TP/SL
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {!tradingSession && hasActiveSession && (
                 <div className="flex items-center space-x-1">
                   <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse"></div>
                   <div className="w-1 h-1 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
@@ -144,13 +205,13 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
                 </div>
               )}
             </div>
-            {latestLog && (
-              <div className="mt-1.5 pt-1.5 border-t border-[#262626]">
-                <div className="text-[9px] text-[#6b7280] truncate">
-                  {latestLog.message}
-                </div>
+            
+            {/* Click to view details hint */}
+            <div className="mt-2 pt-1.5 border-t border-[#262626]">
+              <div className="text-[9px] text-[#6b7280] text-center">
+                Click for full trading logs →
               </div>
-            )}
+            </div>
           </div>
         </Card>
       </div>

@@ -371,10 +371,26 @@ def _decode_trade_struct(raw) -> Dict[str, Any]:
     """
     Decode ITradingStorage.Trade into a python dict with both raw + human fields.
     raw is the tuple returned by openTrades(...).
+    
+    Note: Avantis stores leverage with 10 decimal places (same as price).
+    So 5x leverage = 50000000000 raw value.
     """
     if not raw or raw[0] == "0x0000000000000000000000000000000000000000":
         return {}
-
+    
+    # Leverage is stored with 10 decimal places (PRICE_DECIMALS)
+    leverage_raw = int(raw[7])
+    leverage = leverage_raw // (10 ** PRICE_DECIMALS) if leverage_raw >= (10 ** PRICE_DECIMALS) else leverage_raw
+    
+    # Ensure leverage is at least 1 and reasonable
+    if leverage < 1:
+        leverage = 1
+    elif leverage > 150:  # Max leverage on Avantis is typically 150x
+        # If leverage is still too high, might need different scaling
+        leverage = leverage_raw // (10 ** 9)  # Try 9 decimals
+        if leverage < 1 or leverage > 150:
+            leverage = leverage_raw // (10 ** 8)  # Try 8 decimals
+    
     return {
         "trader": raw[0],
         "pair_index": int(raw[1]),
@@ -385,7 +401,8 @@ def _decode_trade_struct(raw) -> Dict[str, Any]:
         "open_price_raw": int(raw[5]),
         "open_price": float(raw[5]) / float(10 ** PRICE_DECIMALS),
         "is_long": bool(raw[6]),
-        "leverage": int(raw[7]),
+        "leverage_raw": leverage_raw,
+        "leverage": leverage,
         "tp_raw": int(raw[8]),
         "tp": float(raw[8]) / float(10 ** PRICE_DECIMALS) if int(raw[8]) > 0 else 0.0,
         "sl_raw": int(raw[9]),
@@ -463,11 +480,48 @@ async def _get_pair_min_lev_pos_usdc(
     storage = _get_trading_storage_contract(rpc)
     
     try:
-        min_pos_raw = storage.functions.pairMinLevPosUSDC(pair_index).call()
-        return int(min_pos_raw)
+        # Add timeout to prevent hanging (10 seconds)
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def _call_contract():
+            return storage.functions.pairMinLevPosUSDC(pair_index).call()
+        
+        # Run in thread pool with timeout
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            try:
+                min_pos_raw = await asyncio.wait_for(
+                    loop.run_in_executor(executor, _call_contract),
+                    timeout=10.0
+                )
+                return int(min_pos_raw)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout fetching pairMinLevPosUSDC for pair_index={pair_index} - RPC may be slow")
+                # Return a default minimum to allow trading to continue
+                # Default: $10 minimum (matches MIN_COLLATERAL_USDC)
+                return int(10 * (10 ** USDC_DECIMALS))
+            except Exception as call_error:
+                error_msg = str(call_error)
+                if "execution reverted" in error_msg.lower() or "no data" in error_msg.lower():
+                    logger.warning(f"Contract call reverted for pair_index={pair_index}: {call_error}")
+                    # Return a default minimum to allow trading to continue
+                    return int(10 * (10 ** USDC_DECIMALS))
+                else:
+                    logger.warning(f"Failed to fetch pairMinLevPosUSDC for pair_index={pair_index}: {call_error}")
+                    # Return default for other errors too
+                    return int(10 * (10 ** USDC_DECIMALS))
+            except asyncio.CancelledError:
+                logger.warning(f"Request cancelled while fetching pairMinLevPosUSDC for pair_index={pair_index}")
+                return int(10 * (10 ** USDC_DECIMALS))
     except Exception as e:
-        logger.warning(f"Failed to fetch pairMinLevPosUSDC for pair_index={pair_index}: {e}")
-        raise
+        error_msg = str(e).lower()
+        if "timeout" in error_msg or "cancelled" in error_msg or "cancellation" in error_msg:
+            logger.warning(f"Timeout/cancellation error fetching pairMinLevPosUSDC for pair_index={pair_index}: {e}")
+        else:
+            logger.warning(f"Unexpected error fetching pairMinLevPosUSDC for pair_index={pair_index}: {e}")
+        # Return default minimum instead of raising
+        return int(10 * (10 ** USDC_DECIMALS))
 
 
 async def get_min_position_size_usdc(
@@ -1198,38 +1252,95 @@ async def get_all_open_trades_for_trader(
     Returns:
         List of enriched trade dictionaries with Trade + TradeInfo + OpenLimitOrder
     """
+    import time
+    
     rpc = _get_rpc_url(rpc_url)
     storage = _get_trading_storage_contract(rpc)
 
     if max_pairs is None:
         max_pairs = settings.avantis_max_pair_index
 
+    # Normalize trader address to checksum format
+    trader_address = Web3.to_checksum_address(trader_address)
+    
+    logger.info(f"📊 [POSITIONS] Fetching positions for trader: {trader_address}")
+    logger.info(f"📊 [POSITIONS] Scanning {max_pairs} pairs using TradingStorage: {settings.avantis_trading_storage_contract_address}")
+
     results: List[Dict[str, Any]] = []
+    pairs_with_trades = []
 
     def _count_for_pair(p_idx: int) -> int:
         return storage.functions.openTradesCount(trader_address, p_idx).call()
+    
+    def _read_trade_direct(p_idx: int, t_idx: int):
+        """Direct read without get_open_trade_full to avoid rate limits."""
+        return storage.functions.openTrades(trader_address, p_idx, t_idx).call()
+
+    # Priority pairs - check the most common ones first (ETH=0, BTC=1)
+    # Only scan first 15 pairs for speed (covers most common assets)
+    priority_pairs = [0, 1, 2, 3, 4, 5]
+    other_pairs = [i for i in range(min(max_pairs, 15)) if i not in priority_pairs]
+    all_pairs = priority_pairs + other_pairs
 
     # For each pair, use openTradesCount to know how many indices to look at
-    for pair_index in range(max_pairs):
+    for pair_index in all_pairs:
         try:
             count = await asyncio.to_thread(_count_for_pair, pair_index)
+            
+            # Small delay to avoid rate limiting (50ms between requests)
+            await asyncio.sleep(0.05)
+            
         except Exception as e:
-            logger.debug(f"Could not fetch openTradesCount for pair {pair_index}: {e}")
-            continue
+            error_str = str(e).lower()
+            if "429" in error_str or "rate" in error_str or "too many" in error_str:
+                logger.warning(f"📊 [POSITIONS] Rate limited at pair {pair_index}, waiting...")
+                await asyncio.sleep(0.5)  # Brief wait on rate limit
+                try:
+                    count = await asyncio.to_thread(_count_for_pair, pair_index)
+                except Exception as e2:
+                    logger.debug(f"Could not fetch openTradesCount for pair {pair_index} after retry: {e2}")
+                    continue
+            else:
+                logger.debug(f"Could not fetch openTradesCount for pair {pair_index}: {e}")
+                continue
 
         if count == 0:
             continue
+        
+        pairs_with_trades.append((pair_index, count))
+        logger.info(f"📊 [POSITIONS] Pair {pair_index}: found {count} open trade(s)")
 
         # Trade indices are typically 0..(count-1), but some may be empty;
         # we just iterate a small range and rely on empty trader address to skip.
         for idx in range(count):
-            full = await get_open_trade_full(
-                trader_address=trader_address,
-                pair_index=pair_index,
-                index=idx,
-                rpc_url=rpc,
-            )
-            if full:
-                results.append(full)
+            try:
+                # Use direct read to minimize RPC calls
+                trade_raw = await asyncio.to_thread(_read_trade_direct, pair_index, idx)
+                trade = _decode_trade_struct(trade_raw)
+                
+                if trade:
+                    results.append(trade)
+                    logger.info(f"📊 [POSITIONS] ✅ Found trade: pair={pair_index}, idx={idx}, is_long={trade.get('is_long')}, size=${trade.get('position_size_usdc', 0):.2f}, leverage={trade.get('leverage')}x")
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "rate" in error_str:
+                    logger.warning(f"📊 [POSITIONS] Rate limited, retrying pair={pair_index}, idx={idx}")
+                    await asyncio.sleep(0.3)
+                    try:
+                        trade_raw = await asyncio.to_thread(_read_trade_direct, pair_index, idx)
+                        trade = _decode_trade_struct(trade_raw)
+                        if trade:
+                            results.append(trade)
+                            logger.info(f"📊 [POSITIONS] ✅ Found trade after retry: pair={pair_index}, idx={idx}")
+                    except Exception as e2:
+                        logger.warning(f"📊 [POSITIONS] Error fetching trade pair={pair_index}, idx={idx} after retry: {e2}")
+                else:
+                    logger.warning(f"📊 [POSITIONS] Error fetching trade pair={pair_index}, idx={idx}: {e}")
+
+    if not results:
+        logger.info(f"📊 [POSITIONS] No open positions found for {trader_address}")
+    else:
+        logger.info(f"📊 [POSITIONS] Total {len(results)} position(s) found for {trader_address}")
 
     return results

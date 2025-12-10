@@ -1,4 +1,5 @@
 """Position and balance query operations."""
+import asyncio
 from typing import List, Dict, Any, Optional
 from eth_account import Account
 from web3 import Web3
@@ -22,6 +23,8 @@ except ImportError:
 async def _get_positions_via_sdk(trader_address: str) -> List[Dict[str, Any]]:
     """
     Get positions using Avantis SDK (more reliable than direct contract calls).
+    
+    Raises exception on timeout/error so caller can fall back to direct contract calls.
     """
     if not SDK_AVAILABLE:
         raise RuntimeError("SDK not available")
@@ -31,7 +34,27 @@ async def _get_positions_via_sdk(trader_address: str) -> List[Dict[str, Any]]:
     trader_client = TraderClient(provider_url=rpc_url, feed_client=feed_client)
     
     # get_trades returns (long_trades, short_trades) tuples
-    long_trades, short_trades = await trader_client.trade.get_trades(trader_address)
+    # Add timeout to prevent hanging (20 seconds)
+    # NOTE: We raise exceptions here so caller can fall back to direct contract calls
+    try:
+        long_trades, short_trades = await asyncio.wait_for(
+            trader_client.trade.get_trades(trader_address),
+            timeout=20.0
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        logger.warning(f"Timeout/cancellation fetching positions via SDK for {trader_address} - will fall back to direct contract calls")
+        # Re-raise so caller can use fallback
+        raise
+    except Exception as e:
+        error_msg = str(e).lower()
+        # Check if it's a timeout or cancellation error (even if not caught by specific exception)
+        if "timeout" in error_msg or "cancelled" in error_msg or "cancellation" in error_msg:
+            logger.warning(f"Timeout/cancellation error in SDK for {trader_address} - will fall back to direct contract calls: {e}")
+            # Re-raise so caller can use fallback
+            raise asyncio.TimeoutError(f"SDK timeout: {e}") from e
+        logger.warning(f"Error fetching positions via SDK for {trader_address}: {e}")
+        # Re-raise so caller can use fallback
+        raise
     
     positions = []
     
@@ -155,27 +178,41 @@ async def get_positions(
         else:
             trader_address = Web3.to_checksum_address(address)
         
-        # Use SDK for position fetching (more reliable)
-        if SDK_AVAILABLE:
-            positions = await _get_positions_via_sdk(trader_address)
-            logger.debug(f"Retrieved {len(positions)} positions via SDK")
-            return positions
-        
-        # Fallback to direct contract calls if SDK not available
+        # Use direct contract calls (SDK causes timeouts and is unreliable)
+        # Direct contract calls are faster and more reliable
         from contract_operations import get_all_open_trades_for_trader
         
         trades = await get_all_open_trades_for_trader(trader_address=trader_address)
+        
+        # Also fetch openTradesInfo for accurate position size data
+        from contract_operations import _get_trading_storage_contract, _get_rpc_url, USDC_DECIMALS
+        rpc = _get_rpc_url()
+        storage = _get_trading_storage_contract(rpc)
         
         # Format positions for API response
         formatted_positions = []
         for trade in trades:
             pair_index = trade.get("pair_index")
+            trade_index = trade.get("index", 0)
             symbol = get_symbol(pair_index) if pair_index is not None else None
             
             open_price = trade.get("open_price", 0)
             leverage = trade.get("leverage", 1)
             is_long = trade.get("is_long", False)
-            position_size_usdc = trade.get("position_size_usdc", 0)
+            
+            # Fetch openTradesInfo to get actual position size (openInterestUSDC)
+            try:
+                info_raw = await asyncio.to_thread(
+                    storage.functions.openTradesInfo(trader_address, pair_index, trade_index).call
+                )
+                open_interest_usdc = float(info_raw[0]) / float(10 ** USDC_DECIMALS) if info_raw else 0
+            except Exception as e:
+                logger.warning(f"Could not fetch openTradesInfo for pair={pair_index}, idx={trade_index}: {e}")
+                open_interest_usdc = trade.get("position_size_usdc", 0)
+            
+            # Calculate collateral from openInterestUSDC (position size / leverage)
+            # openInterestUSDC is the leveraged position size (collateral * leverage)
+            collateral = open_interest_usdc / leverage if leverage > 0 else 0
             
             liquidation_price = None
             if open_price > 0 and leverage > 0:
@@ -184,24 +221,65 @@ async def get_positions(
                 else:
                     liquidation_price = open_price * (1 + (1.0 / leverage))
             
-            trade_info = trade.get("info", {})
-            
             formatted_positions.append({
                 "pair_index": pair_index,
+                "index": trade_index,  # Include trade index for closing
                 "symbol": symbol,
                 "is_long": is_long,
-                "collateral": position_size_usdc / leverage if leverage > 0 else 0,
+                "collateral": collateral,
+                "position_size": open_interest_usdc,  # Leveraged position size
                 "leverage": leverage,
                 "entry_price": open_price,
-                "current_price": open_price,
+                "current_price": open_price,  # Will be updated with real price below
                 "pnl": 0,
                 "pnl_percentage": 0,
                 "liquidation_price": liquidation_price,
                 "take_profit": trade.get("tp"),
                 "stop_loss": trade.get("sl"),
                 "timestamp": trade.get("timestamp"),
-                "open_interest_usdc": trade_info.get("open_interest_usdc", 0),
+                "open_interest_usdc": open_interest_usdc,
             })
+        
+        # Fetch current prices to calculate PnL (using Binance API instead of SDK)
+        if formatted_positions:
+            try:
+                from price_fetcher import fetch_prices_for_symbols
+                symbols = [pos["symbol"] for pos in formatted_positions if pos.get("symbol")]
+                logger.info(f"💰 [PRICE] Fetching prices for: {symbols}")
+                if symbols:
+                    price_map = await fetch_prices_for_symbols(list(set(symbols)))
+                    logger.info(f"💰 [PRICE] Got prices: {price_map}")
+                    
+                    # Update positions with current prices and calculate PnL
+                    for pos in formatted_positions:
+                        sym = pos.get("symbol", "").upper()
+                        if sym in price_map:
+                            current_price = price_map[sym]
+                            pos["current_price"] = current_price
+                            
+                            # Calculate PnL using position size (leveraged value)
+                            entry_price = pos["entry_price"]
+                            position_size = pos.get("position_size", pos["collateral"] * pos["leverage"])
+                            collateral = pos["collateral"]
+                            is_long = pos["is_long"]
+                            
+                            if entry_price > 0 and collateral > 0:
+                                # PnL calculation: (current - entry) / entry * position_size
+                                price_diff_pct = (current_price - entry_price) / entry_price
+                                if not is_long:
+                                    price_diff_pct = -price_diff_pct  # Reverse for shorts
+                                
+                                pnl_usd = price_diff_pct * position_size
+                                pnl_pct = (pnl_usd / collateral) * 100  # ROE percentage
+                                
+                                pos["pnl"] = round(pnl_usd, 2)
+                                pos["pnl_percentage"] = round(pnl_pct, 2)
+                                
+                                logger.info(f"💰 [PNL] {sym}: entry=${entry_price:.2f}, current=${current_price:.2f}, pnl=${pnl_usd:.2f} ({pnl_pct:.2f}%)")
+                        else:
+                            logger.warning(f"💰 [PRICE] No price found for {sym}")
+            except Exception as e:
+                logger.error(f"❌ Could not fetch current prices for PnL calculation: {e}")
         
         logger.debug(f"Retrieved {len(formatted_positions)} positions via direct contract")
         return formatted_positions
@@ -324,7 +402,11 @@ async def get_usdc_allowance(
     private_key: str
 ) -> float:
     """
-    Get USDC allowance for trading contract using direct Web3 calls.
+    Get USDC allowance for TradingCallbacks contract using direct Web3 calls.
+    
+    IMPORTANT: The allowance must be checked for the TradingCallbacks contract
+    (avantis_usdc_spender_address), NOT the Trading contract. The Trading contract
+    delegates to TradingCallbacks which does the actual USDC transferFrom.
     
     Args:
         private_key: User's private key (required - backend wallet)
@@ -346,9 +428,12 @@ async def get_usdc_allowance(
         if not w3.is_connected():
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
-        # Get USDC contract
+        # Get USDC contract - use avantis_usdc_spender_address (TradingCallbacks)
+        # This is the contract that actually calls transferFrom, NOT the Trading contract!
         usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender_address = Web3.to_checksum_address(settings.avantis_trading_contract_address)
+        spender_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
+        
+        logger.debug(f"Checking USDC allowance for spender: {spender_address} (TradingCallbacks)")
         
         usdc_abi = [
             {
@@ -382,7 +467,11 @@ async def approve_usdc(
     private_key: str
 ) -> Dict[str, Any]:
     """
-    Approve USDC for trading contract using direct Web3 calls.
+    Approve USDC for TradingCallbacks contract using direct Web3 calls.
+    
+    IMPORTANT: The approval must be for the TradingCallbacks contract
+    (avantis_usdc_spender_address), NOT the Trading contract. The Trading contract
+    delegates to TradingCallbacks which does the actual USDC transferFrom.
     
     Args:
         amount: Amount to approve (0 for unlimited, use max uint256)
@@ -402,9 +491,12 @@ async def approve_usdc(
         if not w3.is_connected():
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
-        # Get USDC contract
+        # Get USDC contract - use avantis_usdc_spender_address (TradingCallbacks)
+        # This is the contract that actually calls transferFrom, NOT the Trading contract!
         usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender_address = Web3.to_checksum_address(settings.avantis_trading_contract_address)
+        spender_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
+        
+        logger.info(f"🔐 Approving USDC for spender: {spender_address} (TradingCallbacks)")
         
         # Convert amount to wei (USDC has 6 decimals)
         if amount == 0:
@@ -451,14 +543,163 @@ async def approve_usdc(
         
         logger.info(f"✅ USDC approval transaction sent: {tx_hash_hex}")
         
+        # Wait for transaction confirmation (critical - position opening needs confirmed approval)
+        logger.info(f"⏳ Waiting for USDC approval transaction confirmation...")
+        import asyncio
+        receipt = await asyncio.to_thread(
+            w3.eth.wait_for_transaction_receipt,
+            tx_hash_hex,
+            timeout=60  # 60 second timeout
+        )
+        
+        if receipt.status == 1:
+            logger.info(f"✅ USDC approval transaction confirmed in block {receipt.blockNumber}")
+        else:
+            logger.error(f"❌ USDC approval transaction failed (status: {receipt.status})")
+            raise ValueError(f"USDC approval transaction failed: {receipt.status}")
+        
         return {
             "success": True,
             "amount": amount,
             "tx_hash": tx_hash_hex,
-            "address": owner_address
+            "address": owner_address,
+            "confirmed": True
         }
         
     except Exception as e:
         logger.error(f"❌ USDC approval failed: {e}", exc_info=True)
         raise
 
+
+@retry_on_network_error()
+async def get_trade_history(
+    private_key: Optional[str] = None,
+    address: Optional[str] = None,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Get trade history (closed trades) for a user.
+    
+    Uses blockchain event logs to query historical trades.
+    
+    Args:
+        private_key: User's private key (for traditional wallets)
+        address: User's address (for Base Accounts)
+        limit: Maximum number of trades to return
+        
+    Returns:
+        List of historical trade dictionaries
+    """
+    if not private_key and not address:
+        raise ValueError("Either private_key or address must be provided")
+    
+    try:
+        # Derive address from private key if provided
+        if private_key:
+            account = Account.from_key(private_key)
+            trader_address = account.address
+        else:
+            trader_address = Web3.to_checksum_address(address)
+        
+        logger.info(f"📜 [HISTORY] Fetching trade history for: {trader_address}")
+        
+        # Get Web3 instance
+        rpc_url = settings.get_effective_rpc_url()
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
+        
+        # TradingCallbacks contract address (where trade events are emitted)
+        callbacks_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
+        
+        # Query recent blocks for MarketExecuted events (last ~3 days, smaller range for RPC limits)
+        current_block = w3.eth.block_number
+        from_block = max(0, current_block - 130000)  # ~3 days on Base
+        
+        logger.info(f"📜 [HISTORY] Querying events from block {from_block} to {current_block}")
+        
+        # MarketExecuted event signature (common pattern for trade close events)
+        # event MarketExecuted(uint256 indexed orderId, address indexed trader, uint256 pairIndex, bool long, uint256 price, uint256 positionSizeUsdc, int256 pnl, uint256 fee)
+        
+        try:
+            # Query logs in chunks to avoid RPC limits
+            history = []
+            chunk_size = 50000
+            
+            for start in range(from_block, current_block, chunk_size):
+                end = min(start + chunk_size - 1, current_block)
+                
+                try:
+                    logs = await asyncio.to_thread(
+                        w3.eth.get_logs,
+                        {
+                            "address": callbacks_address,
+                            "fromBlock": start,
+                            "toBlock": end,
+                        }
+                    )
+                    
+                    # Filter for events that might be closes (have our trader)
+                    for log in logs:
+                        topics = log.get("topics", [])
+                        if len(topics) >= 2:
+                            # Check if this log involves our trader (indexed topic)
+                            try:
+                                indexed_address = "0x" + topics[1].hex()[-40:]
+                                if indexed_address.lower() == trader_address.lower():
+                                    tx_hash = log.get("transactionHash")
+                                    tx_hash_hex = tx_hash.hex() if isinstance(tx_hash, bytes) else str(tx_hash)
+                                    block_number = log.get("blockNumber", 0)
+                                    
+                                    # Get block timestamp
+                                    try:
+                                        block = await asyncio.to_thread(w3.eth.get_block, block_number)
+                                        timestamp = block.get("timestamp", 0)
+                                    except:
+                                        timestamp = 0
+                                    
+                                    from datetime import datetime
+                                    trade_date = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d') if timestamp > 0 else ""
+                                    
+                                    history.append({
+                                        "id": f"{tx_hash_hex}-{log.get('logIndex', 0)}",
+                                        "symbol": "Trade",  # Can't easily decode from raw log
+                                        "pair_index": 0,
+                                        "is_long": True,
+                                        "side": "Trade",
+                                        "leverage": 0,
+                                        "collateral": 0,
+                                        "position_size": 0,
+                                        "open_price": 0,
+                                        "close_price": 0,
+                                        "pnl": 0,
+                                        "pnl_percentage": 0,
+                                        "timestamp": timestamp,
+                                        "date": trade_date,
+                                        "tx_hash": tx_hash_hex,
+                                        "trader": trader_address,
+                                        "type": "event",
+                                    })
+                            except Exception as e:
+                                continue
+                                
+                except Exception as chunk_error:
+                    logger.debug(f"📜 [HISTORY] Chunk {start}-{end} failed: {chunk_error}")
+                    continue
+                
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.1)
+            
+            logger.info(f"📜 [HISTORY] Found {len(history)} trade events for {trader_address}")
+            
+            # Sort by timestamp desc and limit
+            history.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+            return history[:limit]
+            
+        except Exception as e:
+            logger.warning(f"📜 [HISTORY] Error querying events: {e}")
+            return []
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting trade history: {e}", exc_info=True)
+        raise

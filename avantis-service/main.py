@@ -1,4 +1,5 @@
 """FastAPI main application for Avantis trading service."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -21,7 +22,8 @@ from position_queries import (
     get_balance,
     get_total_pnl,
     get_usdc_allowance,
-    approve_usdc
+    approve_usdc,
+    get_trade_history
 )
 from symbols import SymbolNotFoundError, get_all_supported_symbols, ensure_pair_map_initialized
 from utils import map_exception_to_http_status
@@ -338,18 +340,38 @@ async def api_get_positions(
     For Base Accounts: provide address (no private key needed for read operations)
     For traditional wallets: provide private_key
     """
+    # Log the request (mask private key for security)
+    masked_key = f"{private_key[:10]}...{private_key[-4:]}" if private_key and len(private_key) > 14 else "***"
+    logger.info(f"📊 [API] GET /api/positions - private_key={masked_key}, address={address}")
+    
     if not private_key and not address:
+        logger.warning("📊 [API] No private_key or address provided")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either private_key (traditional wallets) or address (Base Accounts) must be provided"
         )
     try:
+        # Derive address from private key for logging
+        if private_key:
+            from eth_account import Account
+            derived_address = Account.from_key(private_key).address
+            logger.info(f"📊 [API] Derived address from private_key: {derived_address}")
+        
         positions = await get_positions(private_key=private_key, address=address)
+        logger.info(f"📊 [API] Returning {len(positions)} position(s)")
         return {"positions": positions, "count": len(positions)}
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        logger.warning("📊 [API] Timeout fetching positions - RPC may be slow, returning empty positions")
+        return {"positions": [], "count": 0}
     except Exception as e:
-        logger.error(f"Error in get_positions: {e}", exc_info=True)
+        error_msg = str(e)
+        # If it's a timeout or connection error, return empty positions instead of 500
+        if "timeout" in error_msg.lower() or "connection" in error_msg.lower() or "econnrefused" in error_msg.lower():
+            logger.warning(f"📊 [API] Network error fetching positions: {e} - returning empty positions")
+            return {"positions": [], "count": 0}
+        logger.error(f"📊 [API] Error in get_positions: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get positions: {str(e)}"
@@ -392,7 +414,7 @@ async def api_get_total_pnl(
 ):
     """
     Get total unrealized PnL for a user.
-    
+
     For Base Accounts: provide address (no private key needed for read operations)
     For traditional wallets: provide private_key
     """
@@ -410,6 +432,37 @@ async def api_get_total_pnl(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get total PnL: {str(e)}"
         )
+
+
+@app.get("/api/trade-history")
+async def api_get_trade_history(
+    private_key: Optional[str] = Query(None, description="User's private key (for traditional wallets)"),
+    address: Optional[str] = Query(None, description="User's address (for Base Accounts)"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of trades to return")
+):
+    """
+    Get trade history (closed trades) for a user.
+    
+    For Base Accounts: provide address (no private key needed for read operations)
+    For traditional wallets: provide private_key
+    """
+    # Log the request
+    masked_key = f"{private_key[:10]}...{private_key[-4:]}" if private_key and len(private_key) > 14 else "***"
+    logger.info(f"📜 [API] GET /api/trade-history - private_key={masked_key}, address={address}, limit={limit}")
+    
+    if not private_key and not address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either private_key (traditional wallets) or address (Base Accounts) must be provided"
+        )
+    try:
+        history = await get_trade_history(private_key=private_key, address=address, limit=limit)
+        logger.info(f"📜 [API] Returning {len(history)} historical trade(s)")
+        return {"trades": history, "count": len(history)}
+    except Exception as e:
+        logger.error(f"Error in get_trade_history: {e}", exc_info=True)
+        # Return empty history on error (don't fail the request)
+        return {"trades": [], "count": 0, "error": str(e)}
 
 
 @app.get("/api/min-position")
@@ -449,8 +502,31 @@ async def api_get_min_position(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        logger.warning(f"Timeout/cancellation in get_min_position_size_for_pair: {e}")
+        # Return default minimum: $10
+        default_min = 10.0
+        return {
+            "pair_index": pair_index,
+            "leverage": leverage,
+            "min_collateral_usdc": default_min,
+            "min_position_size_usdc": default_min * leverage,
+            "note": "Using default minimum due to RPC timeout"
+        }
     except Exception as e:
-        logger.error(f"Error in get_min_position_size_for_pair: {e}", exc_info=True)
+        error_msg = str(e)
+        logger.warning(f"Error in get_min_position_size_for_pair: {e}")
+        # If contract call fails, return a default minimum instead of error
+        if "execution reverted" in error_msg.lower() or "no data" in error_msg.lower() or "timeout" in error_msg.lower() or "cancelled" in error_msg.lower():
+            # Return default minimum: $10
+            default_min = 10.0
+            return {
+                "pair_index": pair_index,
+                "leverage": leverage,
+                "min_collateral_usdc": default_min,
+                "min_position_size_usdc": default_min * leverage,
+                "note": "Using default minimum due to RPC/contract error"
+            }
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get minimum position size: {str(e)}"

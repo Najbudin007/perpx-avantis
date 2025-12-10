@@ -240,7 +240,7 @@ function isTransientError(error: string): boolean {
  * This is a helper function to map symbols to pair indices for validation
  * Uses the same mapping as the backend symbol registry
  */
-async function getPairIndexForSymbol(symbol: string): Promise<number | undefined> {
+function getPairIndexForSymbol(symbol: string): number | undefined {
   // Symbol to pair index mapping (must match backend symbol_registry.py)
   const symbolToPairIndex: Record<string, number> = {
     'BTC': 0,
@@ -266,11 +266,12 @@ async function getPairIndexForSymbol(symbol: string): Promise<number | undefined
   
   if (pairIndex !== undefined) {
     console.log(`[AVANTIS] ✅ Resolved pair index ${pairIndex} for symbol ${upperSymbol}`);
+    return pairIndex;
   } else {
     console.warn(`[AVANTIS] ⚠️ Symbol ${upperSymbol} not found in pair index mapping`);
+    console.warn(`[AVANTIS] ⚠️ Available symbols:`, Object.keys(symbolToPairIndex).join(', '));
+    return undefined;
   }
-  
-  return pairIndex;
 }
 
 /**
@@ -301,10 +302,13 @@ export async function openAvantisPositionSafe(
   // Get pair index for validation
   let pairIndex: number | undefined = options?.pairIndex;
   if (!pairIndex) {
-    pairIndex = await getPairIndexForSymbol(params.symbol);
-    if (!pairIndex) {
+    pairIndex = getPairIndexForSymbol(params.symbol);
+    if (pairIndex === undefined) {
       console.warn(`[AVANTIS] ⚠️ Could not resolve pair index for ${params.symbol}, skipping pre-validation`);
+      console.warn(`[AVANTIS] ⚠️ Position will still be attempted - backend will validate`);
       // Continue without validation - the backend will catch it
+    } else {
+      console.log(`[AVANTIS] ✅ Using pair index ${pairIndex} for ${params.symbol}`);
     }
   }
 
@@ -396,6 +400,14 @@ export async function openAvantisPosition(
       };
     }
 
+    // Remove trailing slash from AVANTIS_API_URL if present
+    const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
+
+      // Small random delay to prevent nonce conflicts when multiple positions open simultaneously
+      // This helps when BTC and ETH positions try to approve at the same time
+      const randomDelay = Math.random() * 500; // 0-500ms random delay
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
+
       // Balance validation before opening (non-blocking, fast check)
       if (!skipBalanceCheck) {
         try {
@@ -419,32 +431,130 @@ export async function openAvantisPosition(
           console.warn(`[AVANTIS] ⚠️ Balance check failed, continuing anyway:`, balanceError);
         }
       }
-    
-    // Remove trailing slash from AVANTIS_API_URL if present
-    const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
+
+      // USDC Approval check before opening (CRITICAL)
+      // Check current allowance first, then approve if needed, and wait for confirmation
+      try {
+        console.log(`[AVANTIS] 🔐 Checking USDC allowance...`);
+        const requiredAmount = params.collateral * 1.5; // Need 150% to ensure enough for fees
+        
+        // Step 1: Check current allowance
+        let currentAllowance = 0;
+        try {
+          const allowanceResponse = await fetch(`${baseUrl}/api/usdc-allowance?private_key=${encodeURIComponent(params.private_key)}`, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: AbortSignal.timeout(10000), // 10 second timeout
+          });
+          
+          if (allowanceResponse.ok) {
+            const allowanceData = await allowanceResponse.json() as { allowance?: number };
+            currentAllowance = allowanceData.allowance || 0;
+            console.log(`[AVANTIS] Current USDC allowance: $${currentAllowance.toFixed(2)}`);
+          }
+        } catch (allowanceCheckError) {
+          console.warn(`[AVANTIS] ⚠️ Could not check current allowance, will approve anyway:`, allowanceCheckError);
+        }
+        
+        // Step 2: Approve if current allowance is insufficient
+        if (currentAllowance < requiredAmount) {
+          console.log(`[AVANTIS] ⚠️ Insufficient allowance ($${currentAllowance.toFixed(2)} < $${requiredAmount.toFixed(2)}), approving...`);
+        
+        const approveResponse = await fetch(`${baseUrl}/api/approve-usdc`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+              amount: requiredAmount,
+            private_key: params.private_key,
+          }),
+            signal: AbortSignal.timeout(70000), // 70 second timeout (approval waits for confirmation)
+        });
+
+        if (approveResponse.ok) {
+            const approveResult = await approveResponse.json() as { success?: boolean; confirmed?: boolean; tx_hash?: string };
+            if (approveResult.success && approveResult.confirmed) {
+              console.log(`[AVANTIS] ✅ USDC approval confirmed on-chain: $${requiredAmount.toFixed(2)} (TX: ${approveResult.tx_hash?.slice(0, 16)}...)`);
+              
+              // Step 3: Verify allowance after approval (double-check)
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for blockchain state to update
+              
+              try {
+                const verifyResponse = await fetch(`${baseUrl}/api/usdc-allowance?private_key=${encodeURIComponent(params.private_key)}`, {
+                  method: 'GET',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  signal: AbortSignal.timeout(10000),
+                });
+                
+                if (verifyResponse.ok) {
+                  const verifyData = await verifyResponse.json() as { allowance?: number };
+                  const newAllowance = verifyData.allowance || 0;
+                  console.log(`[AVANTIS] Verified allowance after approval: $${newAllowance.toFixed(2)}`);
+                  
+                  if (newAllowance < requiredAmount) {
+                    console.warn(`[AVANTIS] ⚠️ Allowance still insufficient after approval ($${newAllowance.toFixed(2)} < $${requiredAmount.toFixed(2)}), but continuing...`);
+                  }
+                }
+              } catch (verifyError) {
+                console.warn(`[AVANTIS] ⚠️ Could not verify allowance after approval:`, verifyError);
+              }
+            } else {
+              console.warn(`[AVANTIS] ⚠️ USDC approval sent but not confirmed yet: ${approveResult.tx_hash || 'no tx hash'}`);
+            }
+          } else {
+            const errorData = await approveResponse.json().catch(() => ({ detail: 'Approval failed' })) as { detail?: string };
+            console.warn(`[AVANTIS] ⚠️ USDC approval failed: ${errorData.detail || 'Approval failed'}`);
+            // Don't continue if approval failed - position will fail anyway
+            return {
+              success: false,
+              error: `USDC approval failed: ${errorData.detail || 'Approval failed'}. Cannot open position without sufficient allowance.`
+            };
+          }
+        } else {
+          console.log(`[AVANTIS] ✅ Sufficient USDC allowance already exists: $${currentAllowance.toFixed(2)} >= $${requiredAmount.toFixed(2)}`);
+        }
+      } catch (approvalError) {
+        const errorMessage = approvalError instanceof Error ? approvalError.message : String(approvalError);
+        console.error(`[AVANTIS] ❌ USDC approval process failed:`, errorMessage);
+        // Don't continue if approval failed - position will fail anyway
+        return {
+          success: false,
+          error: `USDC approval failed: ${errorMessage}. Cannot open position without sufficient allowance.`
+        };
+      }
       
       // Add timeout to prevent hanging
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.error(`[AVANTIS] ❌ Timeout opening position after 30 seconds`);
+      }, 30000); // 30 second timeout
 
-    const response = await fetch(`${baseUrl}/api/open-position`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        symbol: params.symbol,
-        collateral: params.collateral,
-        leverage: params.leverage,
-        is_long: params.is_long,
-        private_key: params.private_key,
-        tp: params.tp,
-        sl: params.sl,
-      }),
-        signal: controller.signal,
-    });
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/api/open-position`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            symbol: params.symbol,
+            collateral: params.collateral,
+            leverage: params.leverage,
+            is_long: params.is_long,
+            private_key: params.private_key,
+            tp: params.tp,
+            sl: params.sl,
+          }),
+          signal: controller.signal,
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: response.statusText })) as { detail?: string };
@@ -546,7 +656,62 @@ export async function openAvantisPosition(
         message: result.message || 'Position opened successfully on Avantis',
         verified: positionVerified
     };
-  } catch (error) {
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        
+        // Handle timeout and connection errors
+        if (fetchError instanceof Error) {
+          if (fetchError.name === 'AbortError' || fetchError.message.includes('timeout')) {
+            const errorMessage = `Timeout opening position - Avantis service may be slow or down`;
+            console.error(`[AVANTIS] ❌ ${errorMessage}`);
+            
+            // Check if error is transient and we should retry
+            if (attempt < maxRetries) {
+              const delay = (attempt + 1) * 2000; // Exponential backoff
+              console.log(`[AVANTIS] ⏳ Retrying after timeout in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue; // Retry
+            }
+            
+            return {
+              success: false,
+              error: errorMessage
+            };
+          } else if (fetchError.message.includes('ECONNREFUSED') || fetchError.message.includes('other side closed')) {
+            const errorMessage = `Avantis service connection refused - check if service is running on ${baseUrl}`;
+            console.error(`[AVANTIS] ❌ ${errorMessage}`);
+            
+            // Check if error is transient and we should retry
+            if (attempt < maxRetries) {
+              const delay = (attempt + 1) * 2000; // Exponential backoff
+              console.log(`[AVANTIS] ⏳ Retrying after connection error in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue; // Retry
+            }
+            
+            return {
+              success: false,
+              error: errorMessage
+            };
+          }
+        }
+        
+        // Check if error is transient and we should retry
+        const errorMessage = fetchError instanceof Error ? fetchError.message : 'Unknown error';
+        if (isTransientError(errorMessage) && attempt < maxRetries) {
+          const delay = (attempt + 1) * 1000; // Exponential backoff
+          console.log(`[AVANTIS] ⏳ Transient error detected, retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue; // Retry
+        }
+        
+        // If we get here, it's not a retryable error or max retries reached
+        return {
+          success: false,
+          error: errorMessage
+        };
+      }
+    } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`[AVANTIS] ❌ Exception opening position${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}:`, error);
 
@@ -559,8 +724,8 @@ export async function openAvantisPosition(
       }
 
       // Permanent error or max retries reached
-    return {
-      success: false,
+      return {
+        success: false,
         error: errorMessage
       };
     }
@@ -642,31 +807,61 @@ export async function getAvantisPositions(privateKey: string): Promise<Array<{
     // Remove trailing slash from AVANTIS_API_URL if present
     const avantisApiUrl = getAvantisApiUrl();
     const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
-    const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    
+    // Add timeout to prevent hanging when Avantis service is down
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      console.warn(`[AVANTIS] ⚠️ Timeout fetching positions from Avantis service (${baseUrl})`);
+    }, 15000); // 15 second timeout (increased from 8s to handle slow responses)
+    
+    try {
+      const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      console.error(`[AVANTIS] Failed to get positions: ${response.statusText}`);
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.error(`[AVANTIS] Failed to get positions: ${response.status} ${response.statusText}`);
+        return [];
+      }
+
+      const result = await response.json() as { positions?: Array<{
+        pair_index: number;
+        symbol: string;
+        is_long: boolean;
+        collateral: number;
+        leverage: number;
+        entry_price: number;
+        current_price: number;
+        pnl: number;
+      }> };
+      return result.positions || [];
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      
+      // Check if it's a timeout or connection error
+      if (fetchError instanceof Error) {
+        if (fetchError.name === 'AbortError' || fetchError.message.includes('timeout')) {
+          console.warn(`[AVANTIS] ⚠️ Timeout fetching positions - Avantis service may be slow or down`);
+          console.warn(`[AVANTIS] ⚠️ Returning empty positions array - trading will continue`);
+        } else if (fetchError.message.includes('ECONNREFUSED') || fetchError.message.includes('other side closed')) {
+          console.warn(`[AVANTIS] ⚠️ Avantis service connection refused or closed`);
+          console.warn(`[AVANTIS] ⚠️ Check if Avantis service is running on ${baseUrl}`);
+          console.warn(`[AVANTIS] ⚠️ Returning empty positions array - trading will continue`);
+        } else {
+          console.error(`[AVANTIS] Error fetching positions:`, fetchError.message);
+        }
+      }
       return [];
     }
-
-    const result = await response.json() as { positions?: Array<{
-      pair_index: number;
-      symbol: string;
-      is_long: boolean;
-      collateral: number;
-      leverage: number;
-      entry_price: number;
-      current_price: number;
-      pnl: number;
-    }> };
-    return result.positions || [];
   } catch (error) {
-    console.error(`[AVANTIS] Error getting positions:`, error);
+    console.error(`[AVANTIS] Unexpected error getting positions:`, error);
     return [];
   }
 }

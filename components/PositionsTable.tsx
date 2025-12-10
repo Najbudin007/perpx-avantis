@@ -1,31 +1,305 @@
 "use client"
 
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { useState } from 'react'
 import type { Position } from '@/types/trading'
 
 interface PositionsTableProps {
   positions: Position[]
   isLoading?: boolean
-  onClosePosition?: (positionId: string) => Promise<void>
+  onClosePosition?: (position: Position) => Promise<void>
+  onEditPosition?: (position: Position) => void
 }
 
-export function PositionsTable({ positions, isLoading = false, onClosePosition }: PositionsTableProps) {
+// Edit TP/SL Modal Component
+function EditTPSLModal({ 
+  position, 
+  isOpen, 
+  onClose,
+  onSave 
+}: { 
+  position: Position | null
+  isOpen: boolean
+  onClose: () => void
+  onSave?: (tp: number | null, sl: number | null) => void
+}) {
+  const [activeTab, setActiveTab] = useState<'tpsl' | 'collateral'>('tpsl')
+  const [slPrice, setSlPrice] = useState('')
+  const [tpPrice, setTpPrice] = useState('')
+  const [slPercent, setSlPercent] = useState('14.19')
+  const [tpPercent, setTpPercent] = useState('23.18')
+  
+  if (!isOpen || !position) return null
+  
+  const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
+  
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-[#1a1a1a] rounded-xl w-full max-w-md border border-[#374151]">
+        {/* Header */}
+        <div className="p-6 pb-0">
+          <h2 className="text-white text-xl font-semibold mb-4">Adjust Position</h2>
+          
+          {/* Tabs */}
+          <div className="flex border-b border-[#374151]">
+            <button 
+              onClick={() => setActiveTab('tpsl')}
+              className={`px-6 py-3 text-sm font-medium ${
+                activeTab === 'tpsl' 
+                  ? 'text-white bg-[#2a2a2a] border-b-2 border-white' 
+                  : 'text-[#9ca3af]'
+              }`}
+            >
+              TP/SL
+            </button>
+            <button 
+              onClick={() => setActiveTab('collateral')}
+              className={`px-6 py-3 text-sm font-medium ${
+                activeTab === 'collateral' 
+                  ? 'text-white bg-[#2a2a2a] border-b-2 border-white' 
+                  : 'text-[#9ca3af]'
+              }`}
+            >
+              Collateral
+            </button>
+          </div>
+        </div>
+        
+        {/* Position Info */}
+        <div className="p-6">
+          <div className="bg-[#2a2a2a] rounded-lg p-4 mb-6">
+            <div className="flex justify-between items-start">
+              <div>
+                <span className={`text-sm font-medium ${
+                  position.side === 'long' ? 'text-[#27c47d]' : 'text-[#ef4444]'
+                }`}>
+                  {position.side.toUpperCase()} {leverageNum}x
+                </span>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-white font-medium">{position.coin}</span>
+                  <span className="text-[#f7931a]">₿</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-[#9ca3af] text-sm">Open price</div>
+                <div className="text-white">{position.entryPrice.toLocaleString()}</div>
+                <div className="text-[#9ca3af] text-sm mt-2">Current price</div>
+                <div className="text-white">{position.markPrice.toLocaleString()}</div>
+              </div>
+            </div>
+          </div>
+          
+          {activeTab === 'tpsl' && (
+            <>
+              {/* Stop Loss */}
+              <div className="mb-6">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[#ef4444] text-sm font-medium">
+                    Stop Loss <span className="text-[#ef4444]">-1.42 USDC</span>
+                  </span>
+                  <button className="text-[#60a5fa] text-sm hover:underline">Cancel</button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={slPrice || position.stopLoss || ''}
+                    onChange={(e) => setSlPrice(e.target.value)}
+                    placeholder="SL Price"
+                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
+                  />
+                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2">
+                    <input
+                      type="number"
+                      value={slPercent}
+                      onChange={(e) => setSlPercent(e.target.value)}
+                      className="w-16 bg-transparent text-white text-right focus:outline-none"
+                    />
+                    <span className="text-[#9ca3af]">%</span>
+                    <div className="flex flex-col">
+                      <button className="text-[#9ca3af] hover:text-white text-xs">▲</button>
+                      <button className="text-[#9ca3af] hover:text-white text-xs">▼</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Take Profit */}
+              <div className="mb-6">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[#27c47d] text-sm font-medium">
+                    Take Profit <span className="text-[#27c47d]">2.31 USDC</span>
+                  </span>
+                  <button className="text-[#60a5fa] text-sm hover:underline">Cancel</button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={tpPrice || position.takeProfit || ''}
+                    onChange={(e) => setTpPrice(e.target.value)}
+                    placeholder="TP Price"
+                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
+                  />
+                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2">
+                    <input
+                      type="number"
+                      value={tpPercent}
+                      onChange={(e) => setTpPercent(e.target.value)}
+                      className="w-16 bg-transparent text-white text-right focus:outline-none"
+                    />
+                    <span className="text-[#9ca3af]">%</span>
+                    <div className="flex flex-col">
+                      <button className="text-[#9ca3af] hover:text-white text-xs">▲</button>
+                      <button className="text-[#9ca3af] hover:text-white text-xs">▼</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+          
+          {activeTab === 'collateral' && (
+            <div className="text-[#9ca3af] text-center py-8">
+              Collateral adjustment coming soon
+            </div>
+          )}
+        </div>
+        
+        {/* Actions */}
+        <div className="p-6 pt-0 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 bg-[#374151] hover:bg-[#4b5563] text-white font-medium py-3 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onSave?.(
+                tpPrice ? parseFloat(tpPrice) : null,
+                slPrice ? parseFloat(slPrice) : null
+              )
+              onClose()
+            }}
+            className="flex-1 bg-[#c8ff00] hover:bg-[#b3e600] text-black font-medium py-3 rounded-lg transition-colors"
+          >
+            Edit TP/SL
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Close Position Confirmation Modal
+function ClosePositionModal({
+  position,
+  isOpen,
+  onClose,
+  onConfirm,
+  isClosing
+}: {
+  position: Position | null
+  isOpen: boolean
+  onClose: () => void
+  onConfirm: () => void
+  isClosing: boolean
+}) {
+  if (!isOpen || !position) return null
+  
+  const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
+  const positionSize = position.positionValue || (position.collateral ? position.collateral * leverageNum : 0)
+  const pnlValue = position.pnl || 0
+  const isProfit = pnlValue >= 0
+  
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-[#1a1a1a] rounded-xl w-full max-w-md border border-[#374151] p-6">
+        <h2 className="text-white text-xl font-semibold mb-4">Close Position</h2>
+        
+        <div className="bg-[#2a2a2a] rounded-lg p-4 mb-6">
+          <div className="flex justify-between mb-2">
+            <span className="text-[#9ca3af]">Position</span>
+            <span className="text-white">{position.coin} {position.side.toUpperCase()} {leverageNum}x</span>
+          </div>
+          <div className="flex justify-between mb-2">
+            <span className="text-[#9ca3af]">Size</span>
+            <span className="text-white">{positionSize.toFixed(2)} USDC</span>
+          </div>
+          <div className="flex justify-between mb-2">
+            <span className="text-[#9ca3af]">Entry Price</span>
+            <span className="text-white">${position.entryPrice.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between mb-2">
+            <span className="text-[#9ca3af]">Current Price</span>
+            <span className="text-white">${position.markPrice.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-[#9ca3af]">Est. PnL</span>
+            <span className={isProfit ? 'text-[#27c47d]' : 'text-[#ef4444]'}>
+              {isProfit ? '+' : ''}{pnlValue.toFixed(2)} USDC
+            </span>
+          </div>
+        </div>
+        
+        <p className="text-[#9ca3af] text-sm mb-6">
+          Are you sure you want to close this position at market price?
+        </p>
+        
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            disabled={isClosing}
+            className="flex-1 bg-[#374151] hover:bg-[#4b5563] text-white font-medium py-3 rounded-lg transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isClosing}
+            className="flex-1 bg-[#ef4444] hover:bg-[#dc2626] text-white font-medium py-3 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {isClosing ? 'Closing...' : 'Close Position'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function PositionsTable({ positions, isLoading = false, onClosePosition, onEditPosition }: PositionsTableProps) {
+  const [editingPosition, setEditingPosition] = useState<Position | null>(null)
+  const [closingPosition, setClosingPosition] = useState<Position | null>(null)
+  const [isClosing, setIsClosing] = useState(false)
+  
+  const handleClosePosition = async () => {
+    if (!closingPosition || !onClosePosition) return
+    
+    setIsClosing(true)
+    try {
+      await onClosePosition(closingPosition)
+      setClosingPosition(null)
+    } catch (error) {
+      console.error('Failed to close position:', error)
+    } finally {
+      setIsClosing(false)
+    }
+  }
+  
   if (isLoading) {
     return (
-      <Card className="bg-[#1a1a1a] border-[#262626] p-4">
-        <div className="animate-pulse space-y-4">
+      <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
+        <div className="animate-pulse">
+          <div className="h-10 bg-[#2a2a2a] border-b border-[#374151]"></div>
           {[1, 2, 3].map((i) => (
-            <div key={i} className="h-24 bg-[#2a2a2a] rounded-lg"></div>
+            <div key={i} className="h-16 bg-[#1a1a1a] border-b border-[#262626]"></div>
           ))}
         </div>
-      </Card>
+      </div>
     )
   }
   
   if (positions.length === 0) {
     return (
-      <Card className="bg-[#1a1a1a] border-[#262626] p-8 text-center">
+      <div className="bg-[#1a1a1a] rounded-lg p-8 text-center">
         <div className="w-16 h-16 bg-[#2a2a2a] rounded-full flex items-center justify-center mx-auto mb-4">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af]">
             <path d="M13 10V3L4 14h7v7l9-11h-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -35,198 +309,184 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition }
         <p className="text-[#9ca3af] text-sm">
           Your active positions will appear here once opened
         </p>
-      </Card>
+      </div>
     )
   }
   
   return (
-    <Card className="bg-[#1a1a1a] border-[#262626] rounded-2xl overflow-hidden">
-      {/* Table Header */}
-      <div className="p-4 border-b border-[#262626]">
-        <h3 className="text-white font-semibold text-lg">Open Positions ({positions.length})</h3>
-      </div>
-      
-      {/* Scrollable Table Body - Responsive and scrollable */}
-      <div className="overflow-x-auto" style={{ maxHeight: '500px', overflowY: 'auto' }}>
-        {/* Mobile View: Card-based */}
-        <div className="block lg:hidden">
-          <div className="p-4 space-y-4">
-            {positions.map((position, index) => (
-              <Card key={`${position.coin}-${index}`} className="bg-[#2a2a2a] border-[#374151] p-4">
-                {/* Position Header */}
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 bg-[#8759ff] rounded-lg flex items-center justify-center">
-                      <span className="text-white font-bold text-sm">
-                        {position.coin.charAt(0)}
-                      </span>
-                    </div>
-                    <div>
-                      <h4 className="text-white font-semibold">{position.coin}</h4>
-                      <div className="flex items-center space-x-2 mt-1">
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                          position.side === 'long' 
-                            ? 'bg-[#27c47d] text-white' 
-                            : 'bg-[#ef4444] text-white'
-                        }`}>
-                          {position.side.toUpperCase()}
-                        </span>
-                        <span className="text-[#9ca3af] text-xs">{position.leverage}x</span>
-                      </div>
-                    </div>
-                  </div>
-                  {onClosePosition && (
-                    <Button
-                      onClick={() => onClosePosition(position.coin)}
-                      size="sm"
-                      className="bg-[#ef4444] hover:bg-[#dc2626] text-white"
-                    >
-                      Close
-                    </Button>
-                  )}
-                </div>
-                
-                {/* Position Details Grid */}
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <p className="text-[#9ca3af] text-xs mb-1">Entry Price</p>
-                    <p className="text-white font-semibold">${position.entryPrice.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#9ca3af] text-xs mb-1">Mark Price</p>
-                    <p className="text-white font-semibold">${position.markPrice.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#9ca3af] text-xs mb-1">Position Value</p>
-                    <p className="text-white font-semibold">${position.positionValue.toFixed(2)}</p>
-                  </div>
-                  {position.collateral !== undefined && (
-                    <div>
-                      <p className="text-[#9ca3af] text-xs mb-1">Collateral</p>
-                      <p className="text-white font-semibold">${position.collateral.toFixed(2)}</p>
-                    </div>
-                  )}
-                  {position.liquidationPrice && position.liquidationPrice > 0 && (
-                    <div>
-                      <p className="text-[#9ca3af] text-xs mb-1">Liq. Price</p>
-                      <p className="text-[#ef4444] font-semibold">${position.liquidationPrice.toFixed(2)}</p>
-                    </div>
-                  )}
-                  <div>
-                    <p className="text-[#9ca3af] text-xs mb-1">PnL (ROE)</p>
-                    <p className={`font-semibold ${
-                      position.pnl >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'
-                    }`}>
-                      ${position.pnl.toFixed(2)} ({position.roe.toFixed(2)}%)
-                    </p>
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        </div>
-        
-        {/* Desktop View: Table */}
-        <div className="hidden lg:block">
-          <table className="w-full">
-            <thead className="bg-[#2a2a2a] border-b border-[#374151]">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Position
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Side
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Entry Price
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Mark Price
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Size
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Collateral
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Liq. Price
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  PnL (ROE)
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-[#9ca3af] uppercase tracking-wider">
-                  Actions
-                </th>
+    <>
+      <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
+        {/* Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px]">
+            {/* Header - matching Avantis design */}
+            <thead>
+              <tr className="border-b border-[#374151] bg-[#1a1a1a]">
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Pair</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Pos Size</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Collateral</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Open Price</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Current/Liq Price</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">TP/SL</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Gross PNL</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#262626]">
-              {positions.map((position, index) => (
-                <tr key={`${position.coin}-${index}`} className="hover:bg-[#2a2a2a] transition-colors">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-8 h-8 bg-[#8759ff] rounded-lg flex items-center justify-center">
-                        <span className="text-white font-bold text-xs">
-                          {position.coin.charAt(0)}
-                        </span>
+            
+            {/* Body */}
+            <tbody>
+              {positions.map((position, index) => {
+                const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
+                const positionSize = position.positionValue || (position.collateral ? position.collateral * leverageNum : 0)
+                const pnlValue = position.pnl || 0
+                const pnlPercentage = position.roe || 0
+                const isProfit = pnlValue >= 0
+                const slPrice = position.stopLoss || null
+                const tpPrice = position.takeProfit || null
+                
+                // Calculate BTC amount if BTC position
+                const btcAmount = position.coin === 'BTC' && position.entryPrice > 0 
+                  ? (positionSize / position.entryPrice).toFixed(8)
+                  : null
+                
+                return (
+                  <tr key={`${position.coin}-${index}`} className="border-b border-[#262626] hover:bg-[#2a2a2a]/50 transition-colors">
+                    {/* Pair */}
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-[#f7931a] flex items-center justify-center">
+                          <span className="text-white font-bold text-xs">₿</span>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-white font-medium">{position.coin}USD</span>
+                            <span className="text-[#f7931a]">₿</span>
+                            <span className="text-[#9ca3af] text-xs">Perp</span>
+                          </div>
+                          <span className={`text-xs font-medium ${
+                            position.side === 'long' ? 'text-[#27c47d]' : 'text-[#ef4444]'
+                          }`}>
+                            {position.side.charAt(0).toUpperCase() + position.side.slice(1)} {leverageNum}x
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-white font-medium text-sm">{position.coin}</p>
-                        <p className="text-[#9ca3af] text-xs">{position.leverage}x</p>
+                    </td>
+                    
+                    {/* Pos Size */}
+                    <td className="px-4 py-4">
+                      <div className="text-white">{positionSize.toFixed(2)} USDC</div>
+                      {btcAmount && (
+                        <div className="text-[#9ca3af] text-xs">{btcAmount} BTC</div>
+                      )}
+                    </td>
+                    
+                    {/* Collateral */}
+                    <td className="px-4 py-4">
+                      <span className="text-white">
+                        {position.collateral !== undefined ? `${position.collateral.toFixed(2)} USDC` : 'N/A'}
+                      </span>
+                    </td>
+                    
+                    {/* Open Price */}
+                    <td className="px-4 py-4">
+                      <span className="text-white">{position.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</span>
+                    </td>
+                    
+                    {/* Current/Liq Price */}
+                    <td className="px-4 py-4">
+                      <div className="text-white">{position.markPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</div>
+                      <div className="text-[#9ca3af] text-xs">
+                        {position.liquidationPrice && position.liquidationPrice > 0 
+                          ? position.liquidationPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })
+                          : 'N/A'}
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      position.side === 'long' 
-                        ? 'bg-[#27c47d]/20 text-[#27c47d] border border-[#27c47d]/30' 
-                        : 'bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30'
-                    }`}>
-                      {position.side.toUpperCase()}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-white text-sm">
-                    ${position.entryPrice.toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-white text-sm">
-                    ${position.markPrice.toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-white text-sm">
-                    {position.size}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-white text-sm">
-                    ${position.collateral !== undefined ? position.collateral.toFixed(2) : 'N/A'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-[#ef4444] text-sm">
-                    {position.liquidationPrice && position.liquidationPrice > 0 
-                      ? `$${position.liquidationPrice.toFixed(2)}`
-                      : 'N/A'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right">
-                    <div className={`font-semibold text-sm ${
-                      position.pnl >= 0 ? 'text-[#27c47d]' : 'text-[#ef4444]'
-                    }`}>
-                      ${position.pnl.toFixed(2)}
-                      <span className="text-xs ml-1">({position.roe.toFixed(2)}%)</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right">
-                    {onClosePosition && (
-                      <Button
-                        onClick={() => onClosePosition(position.coin)}
-                        size="sm"
-                        className="bg-[#ef4444] hover:bg-[#dc2626] text-white"
-                      >
-                        Close
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    
+                    {/* TP/SL */}
+                    <td className="px-4 py-4">
+                      <div className="text-[#27c47d] text-sm">
+                        TP: {tpPrice ? tpPrice.toLocaleString(undefined, { minimumFractionDigits: 1 }) : '-'}
+                      </div>
+                      <div className="text-[#ef4444] text-sm">
+                        SL: {slPrice ? slPrice.toLocaleString(undefined, { minimumFractionDigits: 1 }) : '-'}
+                      </div>
+                    </td>
+                    
+                    {/* Gross PNL */}
+                    <td className="px-4 py-4">
+                      <div className={isProfit ? 'text-[#27c47d]' : 'text-[#ef4444]'}>
+                        {isProfit ? '+' : ''}{pnlValue.toFixed(2)}
+                      </div>
+                      <div className={`text-xs ${isProfit ? 'text-[#27c47d]' : 'text-[#ef4444]'}`}>
+                        {isProfit ? '+' : ''}{pnlPercentage.toFixed(2)}%
+                      </div>
+                    </td>
+                    
+                    {/* Action Buttons */}
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-2">
+                        {/* Edit TP/SL Button */}
+                        <button
+                          onClick={() => setEditingPosition(position)}
+                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#374151] rounded-lg flex items-center justify-center transition-colors group"
+                          title="Edit TP/SL"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">
+                            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </button>
+                        
+                        {/* External Link Button */}
+                        <a
+                          href={`https://basescan.org/address/${position.coin}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#374151] rounded-lg flex items-center justify-center transition-colors group"
+                          title="View on Explorer"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">
+                            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M15 3h6v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M10 14L21 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </a>
+                        
+                        {/* Close Position Button */}
+                        <button
+                          onClick={() => setClosingPosition(position)}
+                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#ef4444] rounded-lg flex items-center justify-center transition-colors group"
+                          title="Close Position"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">
+                            <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       </div>
-    </Card>
+      
+      {/* Modals */}
+      <EditTPSLModal
+        position={editingPosition}
+        isOpen={!!editingPosition}
+        onClose={() => setEditingPosition(null)}
+      />
+      
+      <ClosePositionModal
+        position={closingPosition}
+        isOpen={!!closingPosition}
+        onClose={() => setClosingPosition(null)}
+        onConfirm={handleClosePosition}
+        isClosing={isClosing}
+      />
+    </>
   )
 }
