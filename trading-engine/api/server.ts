@@ -265,7 +265,7 @@ app.post('/api/close-all-positions', async (req, res) => {
     // For Avantis: Call Avantis service
     // Get Avantis API URL at runtime
     function getAvantisApiUrl(): string {
-      return process.env.AVANTIS_API_URL || 'http://localhost:3002';
+      return process.env.AVANTIS_API_URL || 'http://localhost:8000';
     }
     const avantisApiUrl = getAvantisApiUrl();
     try {
@@ -342,7 +342,7 @@ app.post('/api/close-position', async (req, res) => {
     // For Avantis: Call Avantis service
     // Get Avantis API URL at runtime
     function getAvantisApiUrl(): string {
-      return process.env.AVANTIS_API_URL || 'http://localhost:3002';
+      return process.env.AVANTIS_API_URL || 'http://localhost:8000';
     }
     const avantisApiUrl = getAvantisApiUrl();
     try {
@@ -400,7 +400,7 @@ app.get('/api/prices', async (req, res) => {
     }
     
     // Get Avantis API URL at runtime
-    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
     
     try {
       const controller = new AbortController();
@@ -452,7 +452,7 @@ app.get('/api/positions', async (req, res) => {
     }
     
     // Get positions from Avantis service using private key
-    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
     
       // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
       const controller = new AbortController();

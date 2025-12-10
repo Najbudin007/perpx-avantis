@@ -2,7 +2,10 @@ import adaptiveConfig from './adaptiveConfig.json';
 import { Regime } from './regime';
 
 // Avantis service URL for API calls
-const AVANTIS_SERVICE_URL = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+// Default to port 8000 (Avantis service port) instead of 3002
+// In Docker: use service name like 'http://perpx-avantis-service:8000' or 'http://avantis-service:8000'
+// On host: use 'http://localhost:8000'
+const AVANTIS_SERVICE_URL = process.env.AVANTIS_SERVICE_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
 
 // Hyperliquid SDK budget limits
 const HYPERLIQUID_BUDGET_LIMITS = {
@@ -275,7 +278,7 @@ export function validateAndCapBudget(
  * @param pairIndex - Avantis pair index
  * @param collateral - Collateral amount in USDC
  * @param leverage - Leverage multiplier
- * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:3002)
+ * @param avantisServiceUrl - Optional Avantis service URL (defaults to env var or localhost:8000)
  * @returns Validation result with isValid flag and detailed information
  */
 export async function validateAvantisMinPosition(
@@ -309,6 +312,15 @@ export async function validateAvantisMinPosition(
         return {
           isValid: true, // Non-blocking: allow trade, backend will catch BELOW_MIN_POS
           reason: `On-chain minimum not available for this pair, but allowing trade to proceed`
+        };
+      }
+      // CRITICAL FIX: Treat 404 (endpoint not found) as non-blocking
+      // The Avantis service endpoint might not exist, but backend will validate anyway
+      if (response.status === 404) {
+        console.warn(`[validateAvantisMinPosition] Avantis service endpoint not found (404) for pair ${pairIndex}. This is non-blocking - backend will validate minimum position size.`);
+        return {
+          isValid: true, // Non-blocking: allow trade, backend will catch BELOW_MIN_POS
+          reason: `Avantis service endpoint not available, but allowing trade to proceed - backend will validate`
         };
       }
       return {

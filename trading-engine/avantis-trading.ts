@@ -16,7 +16,10 @@ if (fs.existsSync(envPath)) {
 
 // Runtime functions to get environment variables (not evaluated at build time)
 function getAvantisApiUrl(): string {
-  return process.env.AVANTIS_API_URL || 'http://localhost:3002';
+  // Default to port 8000 (Avantis service port) instead of 3002
+  // In Docker: use service name like 'http://perpx-avantis-service:8000' or 'http://avantis-service:8000'
+  // On host: use 'http://localhost:8000'
+  return process.env.AVANTIS_API_URL || 'http://localhost:8000';
 }
 
 function getBaseRpcUrl(): string {
@@ -323,8 +326,11 @@ export async function openAvantisPositionSafe(
         params.leverage
       );
 
-      // Only block if validation explicitly says invalid AND it's not a contract revert error
-      if (!validation.isValid && !validation.reason?.includes('On-chain minimum not available')) {
+      // Only block if validation explicitly says invalid AND it's not a contract revert error or 404
+      // 404 errors and "On-chain minimum not available" are non-blocking - backend will validate
+      if (!validation.isValid && 
+          !validation.reason?.includes('On-chain minimum not available') &&
+          !validation.reason?.includes('Avantis service endpoint not available')) {
         console.error(`[AVANTIS] ❌ BELOW_MIN_POS pre-check FAILED for ${params.symbol}`);
         console.error(`[AVANTIS]    ${validation.reason}`);
         console.error(`[AVANTIS] ⏭️ Skipping ${params.symbol}: BELOW_MIN_POS`);

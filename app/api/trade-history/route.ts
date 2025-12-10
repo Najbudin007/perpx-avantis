@@ -73,8 +73,8 @@ export async function GET(request: NextRequest) {
     }
     
 
-    // Get trade history from Avantis service (port 3002)
-    const avantisApiUrl = process.env.AVANTIS_SERVICE_URL || 'http://localhost:3002'
+    // Get trade history from Avantis service (port 8000)
+    const avantisApiUrl = process.env.AVANTIS_SERVICE_URL || 'http://localhost:8000'
     
     try {
       const controller = new AbortController()

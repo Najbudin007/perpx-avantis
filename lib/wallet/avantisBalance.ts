@@ -39,7 +39,7 @@ export async function getAvantisBalanceByAddress(
     // Use NEXT_PUBLIC_ prefix for client-side access, or fetch from API route
     const avantisApiUrl = typeof window !== 'undefined' 
       ? (process.env.NEXT_PUBLIC_AVANTIS_API_URL || '/api/avantis-proxy')
-      : (process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002');
+      : (process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000');
     
     // Try to query by address (if Avantis service supports it)
     // Note: This may require updating the Avantis service to support address-based queries
@@ -103,7 +103,7 @@ export async function getAvantisBalance(privateKey: string, network?: string): P
       return cached.data;
     }
 
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
     const avantisClient = new AvantisClient({
       baseUrl: avantisApiUrl,
       privateKey,
@@ -193,7 +193,7 @@ export async function hasRealAvantisBalance(privateKey: string, network?: string
  */
 export async function getAvantisPositions(privateKey: string, network?: string): Promise<Position[]> {
   try {
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
     const avantisClient = new AvantisClient({
       baseUrl: avantisApiUrl,
       privateKey,
@@ -225,7 +225,7 @@ export async function getTotalCollateral(privateKey: string, network?: string): 
  */
 export async function checkUSDCAllowance(privateKey: string, network?: string): Promise<number> {
   try {
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
     const avantisClient = new AvantisClient({
       baseUrl: avantisApiUrl,
       privateKey,

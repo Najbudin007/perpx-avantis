@@ -30,7 +30,8 @@ export async function getAvantisBalanceByAddress(
   avantisApiUrl?: string
 ): Promise<AvantisBalanceData> {
   try {
-    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    // Default to port 8000 (Avantis service port)
+    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:8000';
     
     // Call Avantis service API with address
     // Note: The Avantis service may need to be updated to support address-only queries
@@ -67,7 +68,8 @@ export async function getAvantisPositionsByAddress(
   avantisApiUrl?: string
 ): Promise<AvantisPosition[]> {
   try {
-    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+    // Default to port 8000 (Avantis service port)
+    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:8000';
     
     // Call Avantis service API with address
     const response = await fetch(`${apiUrl}/api/positions?address=${address}`, {

@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Call Avantis service
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:3002'
+    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:8000'
     
     const avantisResponse = await fetch(`${avantisApiUrl}/api/update-tp-sl`, {
       method: 'POST',
