@@ -119,7 +119,22 @@ function isValidNumber(value: number): boolean {
 
 export function IntegratedWalletProvider({ children }: { children: React.ReactNode }) {
   const { user, token } = useAuth();
-  const clientWalletService = useMemo(() => new ClientWalletService(() => token || ''), [token]);
+  const clientWalletService = useMemo(
+    () =>
+      new ClientWalletService(() => {
+        if (token) return token;
+        if (typeof window !== 'undefined') {
+          // Fallback to persisted tokens (Base mini-app or web)
+          return (
+            localStorage.getItem('base_auth_token') ||
+            localStorage.getItem('web_auth_token') ||
+            ''
+          );
+        }
+        return '';
+      }),
+    [token]
+  );
   const { isConnected: isMetaMaskConnected, account: metaMaskAccount } = useMetaMask();
   const networkConfig = useMemo(() => getNetworkConfig(), []);
   const nativeSymbol = networkConfig.nativeSymbol || 'ETH';

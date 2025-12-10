@@ -5,6 +5,7 @@ import { useTrading } from './useTrading';
 import { usePositions } from './usePositions';
 import { useTradingFee } from './useTradingFee';
 import { useIntegratedWallet } from '@/lib/wallet/IntegratedWalletContext';
+import { useAuth } from '@/lib/auth/AuthContext';
 import { calculateLeverageFromBalance, getDefaultLeverage } from '@/lib/utils/leverageCalculator';
 
 export interface TradingSessionState {
@@ -31,6 +32,7 @@ export function useTradingSession() {
   const { positionData, fetchPositions } = usePositions();
   const { payTradingFee, isPayingFee } = useTradingFee();
   const { refreshBalances, avantisBalance, primaryWallet, tradingWallet, tradingWalletAddress, baseAccountAddress } = useIntegratedWallet();
+  const { token } = useAuth();
   
   const [tradingSession, setTradingSession] = useState<TradingSessionState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -188,8 +190,13 @@ export function useTradingSession() {
       try {
         const { ClientWalletService } = await import('@/lib/services/ClientWalletService');
         const getToken = () => {
+          if (token) return token;
           if (typeof window !== 'undefined') {
-            return localStorage.getItem('web_auth_token') || '';
+            return (
+              localStorage.getItem('web_auth_token') ||
+              localStorage.getItem('base_auth_token') ||
+              ''
+            );
           }
           return '';
         };
@@ -313,7 +320,7 @@ export function useTradingSession() {
     } finally {
       setIsLoading(false);
     }
-  }, [startTradingAPI, payTradingFee, refreshBalances]);
+  }, [startTradingAPI, payTradingFee, refreshBalances, token]);
 
   // Stop trading
   const stopTrading = useCallback(async (sessionId: string, closeAll?: boolean) => {
