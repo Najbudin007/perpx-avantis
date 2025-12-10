@@ -30,8 +30,24 @@ export async function getAvantisBalanceByAddress(
   avantisApiUrl?: string
 ): Promise<AvantisBalanceData> {
   try {
-    // Default to port 8000 (Avantis service port)
-    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:8000';
+    // HARDCODED for Farcaster users: Always use Avantis service URL
+    // Check if provided URL or env var is valid (not RPC URL)
+    let apiUrl = avantisApiUrl;
+    if (!apiUrl) {
+      const envUrl = process.env.AVANTIS_API_URL;
+      if (envUrl && 
+          !envUrl.includes('alchemy') && 
+          !envUrl.includes('rpc') && 
+          !envUrl.includes('g.alchemy') &&
+          !envUrl.includes('mainnet.base.org') &&
+          envUrl.includes('8000')) {
+        // Only use env var if it looks like an Avantis service URL
+        apiUrl = envUrl;
+      } else {
+        // HARDCODED: Always use Avantis service URL (Docker service name)
+        apiUrl = 'http://perpx-avantis-service:8000';
+      }
+    }
     
     // Call Avantis service API with address
     // Note: The Avantis service may need to be updated to support address-only queries
@@ -68,8 +84,24 @@ export async function getAvantisPositionsByAddress(
   avantisApiUrl?: string
 ): Promise<AvantisPosition[]> {
   try {
-    // Default to port 8000 (Avantis service port)
-    const apiUrl = avantisApiUrl || process.env.AVANTIS_API_URL || 'http://localhost:8000';
+    // HARDCODED for Farcaster users: Always use Avantis service URL
+    // Check if provided URL or env var is valid (not RPC URL)
+    let apiUrl = avantisApiUrl;
+    if (!apiUrl) {
+      const envUrl = process.env.AVANTIS_API_URL;
+      if (envUrl && 
+          !envUrl.includes('alchemy') && 
+          !envUrl.includes('rpc') && 
+          !envUrl.includes('g.alchemy') &&
+          !envUrl.includes('mainnet.base.org') &&
+          envUrl.includes('8000')) {
+        // Only use env var if it looks like an Avantis service URL
+        apiUrl = envUrl;
+      } else {
+        // HARDCODED: Always use Avantis service URL (Docker service name)
+        apiUrl = 'http://perpx-avantis-service:8000';
+      }
+    }
     
     // Call Avantis service API with address
     const response = await fetch(`${apiUrl}/api/positions?address=${address}`, {

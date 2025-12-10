@@ -265,7 +265,20 @@ app.post('/api/close-all-positions', async (req, res) => {
     // For Avantis: Call Avantis service
     // Get Avantis API URL at runtime
     function getAvantisApiUrl(): string {
-      return process.env.AVANTIS_API_URL || 'http://localhost:8000';
+      // HARDCODED for Farcaster users: Always use Avantis service URL (not RPC URL)
+      // Check if env var is set and doesn't look like an RPC URL
+      const envUrl = process.env.AVANTIS_API_URL;
+      if (envUrl && 
+          !envUrl.includes('alchemy') && 
+          !envUrl.includes('rpc') && 
+          !envUrl.includes('g.alchemy') &&
+          !envUrl.includes('mainnet.base.org') &&
+          envUrl.includes('8000')) {
+        // Only use env var if it looks like an Avantis service URL
+        return envUrl;
+      }
+      // HARDCODED: Always use Avantis service URL (Docker service name)
+      return 'http://perpx-avantis-service:8000';
     }
     const avantisApiUrl = getAvantisApiUrl();
     try {
@@ -342,7 +355,20 @@ app.post('/api/close-position', async (req, res) => {
     // For Avantis: Call Avantis service
     // Get Avantis API URL at runtime
     function getAvantisApiUrl(): string {
-      return process.env.AVANTIS_API_URL || 'http://localhost:8000';
+      // HARDCODED for Farcaster users: Always use Avantis service URL (not RPC URL)
+      // Check if env var is set and doesn't look like an RPC URL
+      const envUrl = process.env.AVANTIS_API_URL;
+      if (envUrl && 
+          !envUrl.includes('alchemy') && 
+          !envUrl.includes('rpc') && 
+          !envUrl.includes('g.alchemy') &&
+          !envUrl.includes('mainnet.base.org') &&
+          envUrl.includes('8000')) {
+        // Only use env var if it looks like an Avantis service URL
+        return envUrl;
+      }
+      // HARDCODED: Always use Avantis service URL (Docker service name)
+      return 'http://perpx-avantis-service:8000';
     }
     const avantisApiUrl = getAvantisApiUrl();
     try {
@@ -400,7 +426,17 @@ app.get('/api/prices', async (req, res) => {
     }
     
     // Get Avantis API URL at runtime
-    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
+    // HARDCODED for Farcaster users: Always use Avantis service URL (not RPC URL)
+    let avantisApiUrl = process.env.AVANTIS_API_URL;
+    if (!avantisApiUrl || 
+        avantisApiUrl.includes('alchemy') || 
+        avantisApiUrl.includes('rpc') || 
+        avantisApiUrl.includes('g.alchemy') ||
+        avantisApiUrl.includes('mainnet.base.org') ||
+        !avantisApiUrl.includes('8000')) {
+      // HARDCODED: Always use Avantis service URL (Docker service name)
+      avantisApiUrl = 'http://perpx-avantis-service:8000';
+    }
     
     try {
       const controller = new AbortController();
@@ -452,7 +488,17 @@ app.get('/api/positions', async (req, res) => {
     }
     
     // Get positions from Avantis service using private key
-    const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
+    // HARDCODED for Farcaster users: Always use Avantis service URL (not RPC URL)
+    let avantisApiUrl = process.env.AVANTIS_API_URL;
+    if (!avantisApiUrl || 
+        avantisApiUrl.includes('alchemy') || 
+        avantisApiUrl.includes('rpc') || 
+        avantisApiUrl.includes('g.alchemy') ||
+        avantisApiUrl.includes('mainnet.base.org') ||
+        !avantisApiUrl.includes('8000')) {
+      // HARDCODED: Always use Avantis service URL (Docker service name)
+      avantisApiUrl = 'http://perpx-avantis-service:8000';
+    }
     
       // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
       const controller = new AbortController();
