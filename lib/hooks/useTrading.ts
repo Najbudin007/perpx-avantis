@@ -60,8 +60,10 @@ export function useTrading() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
         
-        // Construct full URL if relative
-        const fullUrl = url.startsWith('http') ? url : `${process.env.NEXT_PUBLIC_TRADING_ENGINE_URL || 'http://localhost:3001'}${url}`;
+        // Always use relative URLs for Next.js API routes to avoid CORS issues
+        // The Next.js API routes will proxy to the trading engine server-side
+        // Only use absolute URLs if the URL already starts with http/https
+        const fullUrl = url.startsWith('http') ? url : url;
         
         const response = await fetch(fullUrl, {
           ...options,

@@ -33,24 +33,14 @@ export function useLivePrices(symbols: string[], enabled: boolean = true, interv
 
     try {
       const symbolsParam = symbols.join(',');
-      // Use trading engine URL which proxies to avantis-service
-      // Try to get from env, otherwise construct from current origin
-      let tradingEngineUrl = 'http://localhost:3001';
-      if (typeof window !== 'undefined') {
-        // Client-side: try env var first, then construct from origin
-        tradingEngineUrl = process.env.NEXT_PUBLIC_TRADING_ENGINE_URL || 
-          window.location.origin.replace(/:\d+$/, ':3001');
-      } else {
-        // Server-side: use env var
-        tradingEngineUrl = process.env.TRADING_ENGINE_URL || process.env.NEXT_PUBLIC_TRADING_ENGINE_URL || 'http://localhost:3001';
-      }
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-      // Proxy through trading engine to avantis-service
+      // Use Next.js API route to avoid CORS issues
+      // The API route will proxy to the trading engine server-side
       const response = await fetch(
-        `${tradingEngineUrl}/api/prices?symbols=${encodeURIComponent(symbolsParam)}`,
+        `/api/prices?symbols=${encodeURIComponent(symbolsParam)}`,
         {
           method: 'GET',
           headers: {

@@ -22,8 +22,12 @@ function getPort(): number {
 
 // Middleware - CORS configuration with explicit preflight handling
 // CORS: allow all origins in dev, restrict in prod if needed
+// Note: Frontend should use Next.js API routes to avoid CORS issues
+// This CORS config is for direct trading engine access (if needed)
 const corsOptions = {
-  origin: true, // reflect request origin
+  origin: process.env.NODE_ENV === 'production'
+    ? ['https://avantis.superapp.gg']
+    : true, // Allow all origins in dev (localhost:3000, etc.)
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
