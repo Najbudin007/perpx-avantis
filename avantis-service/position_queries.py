@@ -538,7 +538,14 @@ async def approve_usdc(
         
         # Sign and send transaction
         signed_tx = account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        # Handle both camelCase and snake_case attribute names (eth-account version compatibility)
+        raw_tx_bytes = getattr(signed_tx, 'rawTransaction', None) or getattr(signed_tx, 'raw_transaction', None)
+        if raw_tx_bytes is None:
+            # Fallback: try to get bytes directly
+            raw_tx_bytes = bytes(signed_tx) if hasattr(signed_tx, '__bytes__') else None
+        if raw_tx_bytes is None:
+            raise ValueError(f"Could not extract raw transaction from signed transaction. Available attributes: {dir(signed_tx)}")
+        tx_hash = w3.eth.send_raw_transaction(raw_tx_bytes)
         tx_hash_hex = tx_hash.hex()
         
         logger.info(f"✅ USDC approval transaction sent: {tx_hash_hex}")

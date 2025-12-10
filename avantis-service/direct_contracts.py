@@ -420,5 +420,12 @@ class AvantisTradingContract:
         self._require_account()
         assert self.account is not None, "Account must be set when account is required"
         signed = self.account.sign_transaction(tx)
-        tx_hash = self.web3.eth.send_raw_transaction(signed.rawTransaction)
+        # Handle both camelCase and snake_case attribute names (eth-account version compatibility)
+        raw_tx_bytes = getattr(signed, 'rawTransaction', None) or getattr(signed, 'raw_transaction', None)
+        if raw_tx_bytes is None:
+            # Fallback: try to get bytes directly
+            raw_tx_bytes = bytes(signed) if hasattr(signed, '__bytes__') else None
+        if raw_tx_bytes is None:
+            raise ValueError(f"Could not extract raw transaction from signed transaction. Available attributes: {dir(signed)}")
+        tx_hash = self.web3.eth.send_raw_transaction(raw_tx_bytes)
         return tx_hash.hex()

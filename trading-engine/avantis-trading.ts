@@ -176,12 +176,19 @@ async function getAvantisBalance(privateKey: string): Promise<number> {
     const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
     
     // Use the /api/balance endpoint with private_key as query parameter
+    // Add timeout to prevent hanging (10 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
     const response = await fetch(`${baseUrl}/api/balance?private_key=${encodeURIComponent(privateKey)}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
     });
+    
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       console.warn(`[AVANTIS] ⚠️ Failed to get balance: ${response.statusText}`);
