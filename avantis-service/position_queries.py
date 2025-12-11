@@ -399,17 +399,21 @@ async def get_total_pnl(
 
 @retry_on_network_error()
 async def get_usdc_allowance(
-    private_key: str
+    private_key: str,
+    spender_address: Optional[str] = None,
 ) -> float:
     """
-    Get USDC allowance for TradingCallbacks contract using direct Web3 calls.
+    Get USDC allowance for the specified spender (defaults to TradingCallbacks).
     
-    IMPORTANT: The allowance must be checked for the TradingCallbacks contract
-    (avantis_usdc_spender_address), NOT the Trading contract. The Trading contract
-    delegates to TradingCallbacks which does the actual USDC transferFrom.
+    IMPORTANT: The Avantis Trading contract forwards USDC transfers through the
+    TradingCallbacks contract. In some flows the Trading contract address may be
+    the msg.sender that performs `transferFrom`, so we allow callers to specify
+    the spender explicitly and reuse this helper for both contract addresses.
     
     Args:
         private_key: User's private key (required - backend wallet)
+        spender_address: Optional override for the allowance spender. If not
+            provided, defaults to settings.avantis_usdc_spender_address.
         
     Returns:
         USDC allowance amount in USDC units (not wei)
@@ -428,12 +432,13 @@ async def get_usdc_allowance(
         if not w3.is_connected():
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
-        # Get USDC contract - use avantis_usdc_spender_address (TradingCallbacks)
-        # This is the contract that actually calls transferFrom, NOT the Trading contract!
+        # Get USDC contract - defaults to TradingCallbacks (spender), but can be overridden.
         usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
+        spender = Web3.to_checksum_address(
+            spender_address or settings.avantis_usdc_spender_address
+        )
         
-        logger.debug(f"Checking USDC allowance for spender: {spender_address} (TradingCallbacks)")
+        logger.debug(f"Checking USDC allowance for spender: {spender}")
         
         usdc_abi = [
             {
@@ -449,7 +454,7 @@ async def get_usdc_allowance(
         ]
         
         usdc_contract = w3.eth.contract(address=usdc_address, abi=usdc_abi)
-        allowance_wei = usdc_contract.functions.allowance(owner_address, spender_address).call()
+        allowance_wei = usdc_contract.functions.allowance(owner_address, spender).call()
         
         # Convert from wei to USDC (6 decimals)
         allowance_usdc = float(allowance_wei) / 1e6
@@ -464,18 +469,21 @@ async def get_usdc_allowance(
 @retry_on_network_error()
 async def approve_usdc(
     amount: float,
-    private_key: str
+    private_key: str,
+    spender_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Approve USDC for TradingCallbacks contract using direct Web3 calls.
+    Approve USDC for the specified spender (defaults to TradingCallbacks).
     
-    IMPORTANT: The approval must be for the TradingCallbacks contract
-    (avantis_usdc_spender_address), NOT the Trading contract. The Trading contract
-    delegates to TradingCallbacks which does the actual USDC transferFrom.
+    IMPORTANT: The Trading contract may route `transferFrom` through the
+    TradingCallbacks contract. To be safe we allow callers to target either
+    contract address.
     
     Args:
         amount: Amount to approve (0 for unlimited, use max uint256)
         private_key: User's private key (required - each user provides their own)
+        spender_address: Optional override for the spender address. Defaults to
+            settings.avantis_usdc_spender_address.
         
     Returns:
         Dictionary with approval result
@@ -491,12 +499,13 @@ async def approve_usdc(
         if not w3.is_connected():
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
-        # Get USDC contract - use avantis_usdc_spender_address (TradingCallbacks)
-        # This is the contract that actually calls transferFrom, NOT the Trading contract!
+        # Get USDC contract - defaults to TradingCallbacks (spender), but can be overridden.
         usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
+        spender = Web3.to_checksum_address(
+            spender_address or settings.avantis_usdc_spender_address
+        )
         
-        logger.info(f"🔐 Approving USDC for spender: {spender_address} (TradingCallbacks)")
+        logger.info(f"🔐 Approving USDC for spender: {spender}")
         
         # Convert amount to wei (USDC has 6 decimals)
         if amount == 0:
@@ -522,7 +531,7 @@ async def approve_usdc(
         
         # Build transaction
         nonce = w3.eth.get_transaction_count(owner_address, "pending")
-        tx = usdc_contract.functions.approve(spender_address, amount_wei).build_transaction({
+        tx = usdc_contract.functions.approve(spender, amount_wei).build_transaction({
             "from": owner_address,
             "nonce": nonce,
             "chainId": w3.eth.chain_id,

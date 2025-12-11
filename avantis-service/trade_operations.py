@@ -216,39 +216,79 @@ async def _ensure_usdc_approval(private_key: str, amount: float) -> None:
         amount: Amount to approve
     """
     try:
-        # Use safe function to check current allowance
-        try:
-            allowance = await get_usdc_allowance(private_key=private_key)
-        except Exception as e:
-            logger.warning(f"Could not check USDC allowance: {e}. Assuming approval needed.")
-            allowance = 0
+        # Check allowances for all potential spenders:
+        # 1) TradingCallbacks (settings.avantis_usdc_spender_address)
+        # 2) Trading contract (settings.avantis_trading_contract_address)
+        # 3) TradingStorage (settings.avantis_trading_storage_contract_address) - CRITICAL!
+        #    The Trading contract calls storageT.transferUSDC(), which means TradingStorage
+        #    is the contract that actually calls transferFrom on USDC
+        spenders = {
+            "callbacks": settings.avantis_usdc_spender_address,
+            "trading": settings.avantis_trading_contract_address,
+            "storage": settings.avantis_trading_storage_contract_address,
+        }
         
         # Approve slightly more than needed to account for fees and rounding
-        # Approve 110% of amount to ensure we have enough allowance
         approval_amount = amount * 1.1
         
-        if allowance < amount:
-            # Use safe function to approve USDC
-            logger.info(f"🔐 SAFE: Approving USDC: {approval_amount:.2f} (current allowance: {allowance}, required: {amount})")
-            
+        for spender_label, spender_addr in spenders.items():
+            if not spender_addr:
+                logger.warning(f"Skipping {spender_label} - address not configured")
+                continue
+                
             try:
-                result = await approve_usdc(
-                    amount=approval_amount,  # Approve 110% to ensure enough allowance
-                    private_key=private_key
+                allowance = await get_usdc_allowance(private_key=private_key, spender_address=spender_addr)
+                logger.info(f"🔍 [ALLOWANCE_CHECK] {spender_label} ({spender_addr[:10]}...): ${allowance:.2f}")
+            except Exception as e:
+                logger.warning(f"Could not check USDC allowance for {spender_label}: {e}. Assuming approval needed.")
+                allowance = 0
+            
+            if allowance < amount:
+                logger.info(
+                    f"🔐 SAFE: Approving USDC for {spender_label} ({spender_addr}): "
+                    f"{approval_amount:.2f} (current allowance: {allowance}, required: {amount})"
                 )
                 
-                # Wait for confirmation if not already confirmed
-                if not result.get('confirmed'):
-                    logger.info(f"⏳ Waiting for USDC approval confirmation...")
+                try:
+                    result = await approve_usdc(
+                        amount=approval_amount,
+                        private_key=private_key,
+                        spender_address=spender_addr,
+                    )
+                    
+                    # Wait for confirmation if not already confirmed
+                    if not result.get('confirmed'):
+                        logger.info(f"⏳ Waiting for USDC approval confirmation...")
+                        import asyncio
+                        await asyncio.sleep(3)  # Wait 3 seconds for confirmation
+                    
+                    # CRITICAL: Additional delay after confirmation to ensure state propagates
+                    # On slower RPC nodes (like on servers), the allowance might not be immediately
+                    # visible even after transaction confirmation. This is especially important for
+                    # server environments where RPC latency can cause race conditions.
                     import asyncio
-                    await asyncio.sleep(3)  # Wait 3 seconds for confirmation
-                
-                logger.info(f"✅ SAFE USDC approval successful and confirmed: {result.get('tx_hash', 'N/A')}")
-            except Exception as approval_error:
-                logger.error(f"❌ SAFE approval failed: {approval_error}")
-                raise ValueError(f"USDC approval failed: {approval_error}")
-        else:
-            logger.debug(f"USDC allowance sufficient: {allowance} >= {amount}")
+                    await asyncio.sleep(2)  # Wait 2 seconds for state propagation
+                    
+                    # Verify allowance was actually set (double-check for server reliability)
+                    try:
+                        verified_allowance = await get_usdc_allowance(private_key=private_key, spender_address=spender_addr)
+                        if verified_allowance < amount:
+                            logger.warning(
+                                f"⚠️ Allowance verification failed for {spender_label}: "
+                                f"expected >= {amount}, got {verified_allowance}. "
+                                f"This might be an RPC state lag issue."
+                            )
+                        else:
+                            logger.info(f"✅ Verified allowance for {spender_label}: ${verified_allowance:.2f} >= ${amount:.2f}")
+                    except Exception as verify_error:
+                        logger.warning(f"⚠️ Could not verify allowance for {spender_label}: {verify_error}")
+                    
+                    logger.info(f"✅ SAFE USDC approval successful and confirmed for {spender_label}: {result.get('tx_hash', 'N/A')}")
+                except Exception as approval_error:
+                    logger.error(f"❌ SAFE approval failed for {spender_label}: {approval_error}")
+                    raise ValueError(f"USDC approval failed for {spender_label}: {approval_error}")
+            else:
+                logger.debug(f"USDC allowance sufficient for {spender_label}: {allowance} >= {amount}")
             
     except Exception as e:
         logger.error(f"USDC approval check failed: {e}")
