@@ -51,6 +51,16 @@ export function useTradingActivityLogs() {
       type: 'cycle',
       message: `🔄 Starting cycle ${currentCycle} - Scanning ${SYMBOLS.length} markets`,
     })
+    
+    // Add initial session start log if this is the first cycle
+    if (currentCycle === 1) {
+      newLogs.unshift({
+        id: `session-start-${Date.now()}`,
+        timestamp: new Date(now.getTime() - 1000),
+        type: 'status',
+        message: `🚀 Trading session started - Session ID: ${tradingSession.sessionId?.slice(0, 8) || 'Active'}`,
+      })
+    }
 
     // Check if positions changed
     const currentPositions = positionData?.openPositions || 0
@@ -247,16 +257,17 @@ export function useTradingActivityLogs() {
     }
 
     return newLogs
-  }, [tradingSession, positionData, cycleCount, lastPositionCount, avantisBalance])
+  }, [tradingSession, positionData, cycleCount, lastPositionCount, avantisBalance, feePending, feePaidTime])
 
   // Update logs periodically when session is running
   useEffect(() => {
     if (!tradingSession || tradingSession.status !== 'running') {
       setLogs([])
+      setCycleCount(0)
       return
     }
 
-    // Initial logs
+    // Initial logs - generate immediately
     const initialLogs = generateActivityLogs()
     setLogs(initialLogs)
     setCycleCount(prev => prev + 1)
@@ -265,6 +276,16 @@ export function useTradingActivityLogs() {
     if (positionData) {
       setLastPositionCount(positionData.openPositions || 0)
     }
+
+    // Generate first batch of detailed logs after 3 seconds (gives time for initial logs to show)
+    const firstBatchTimeout = setTimeout(() => {
+      const firstBatchLogs = generateActivityLogs()
+      setLogs(prev => {
+        const combined = [...prev, ...firstBatchLogs]
+        return combined.slice(-100)
+      })
+      setCycleCount(prev => prev + 1)
+    }, 3000)
 
     // Generate new cycle logs every 15-20 seconds
     const interval = setInterval(() => {
@@ -277,8 +298,58 @@ export function useTradingActivityLogs() {
       setCycleCount(prev => prev + 1)
     }, 15000 + Math.random() * 5000) // 15-20 seconds
 
-    return () => clearInterval(interval)
-  }, [tradingSession, generateActivityLogs, positionData])
+    return () => {
+      clearTimeout(firstBatchTimeout)
+      clearInterval(interval)
+    }
+  }, [tradingSession, generateActivityLogs, positionData, feePending, feePaidTime])
+
+  // Generate immediate logs when positions change
+  useEffect(() => {
+    if (!tradingSession || tradingSession.status !== 'running') {
+      return
+    }
+
+    const currentPositions = positionData?.openPositions || 0
+    const positionsChanged = currentPositions !== lastPositionCount
+
+    if (positionsChanged && positionData) {
+      const now = new Date()
+      const positionLogs: TradingActivityLog[] = []
+
+      if (currentPositions > lastPositionCount) {
+        // Position opened
+        positionLogs.push({
+          id: `position-opened-${Date.now()}`,
+          timestamp: now,
+          type: 'position_success',
+          message: `✅ Position opened successfully - ${currentPositions} active position${currentPositions > 1 ? 's' : ''}`,
+          details: {
+            entryPrice: positionData.positions?.[0]?.entryPrice,
+            leverage: positionData.positions?.[0]?.leverage,
+            budget: positionData.positions?.[0]?.collateral,
+          },
+        })
+      } else if (currentPositions < lastPositionCount) {
+        // Position closed
+        positionLogs.push({
+          id: `position-closed-${Date.now()}`,
+          timestamp: now,
+          type: 'status',
+          message: `📊 Position closed - ${currentPositions} active position${currentPositions !== 1 ? 's' : ''} remaining`,
+        })
+      }
+
+      if (positionLogs.length > 0) {
+        setLogs(prev => {
+          const combined = [...prev, ...positionLogs]
+          return combined.slice(-100)
+        })
+      }
+
+      setLastPositionCount(currentPositions)
+    }
+  }, [positionData?.openPositions, tradingSession, lastPositionCount, positionData])
 
   return {
     logs: logs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),

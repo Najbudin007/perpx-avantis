@@ -1416,11 +1416,15 @@ const TradeHistoryTab = ({
   
   useEffect(() => {
     const loadTradeHistory = async () => {
-      if (!authToken) return
+      if (!authToken) {
+        console.log('[TradeHistory] No auth token, skipping load')
+        return
+      }
       
       setIsLoading(true)
       setError(null)
       try {
+        console.log('[TradeHistory] Fetching trade history...')
         // Fetch actual trade history from Avantis (closed trades)
         const response = await fetch('/api/trade-history', {
           headers: {
@@ -1431,12 +1435,21 @@ const TradeHistoryTab = ({
         
         if (response.ok) {
           const data = await response.json()
+          console.log('[TradeHistory] Received data:', { count: data.count, tradesLength: data.trades?.length || 0, error: data.error })
           setTradeHistory(data.trades || [])
+          if (data.error) {
+            console.warn('[TradeHistory] API returned error:', data.error)
+            setError(data.error)
+          }
         } else {
+          const errorText = await response.text().catch(() => 'Unknown error')
+          console.error('[TradeHistory] API error:', response.status, errorText)
+          setError(`Failed to load trade history: ${errorText}`)
           setTradeHistory([])
         }
       } catch (err) {
-        setError('Failed to load trade history')
+        console.error('[TradeHistory] Fetch error:', err)
+        setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
         setTradeHistory([])
       } finally {
         setIsLoading(false)
@@ -1447,13 +1460,26 @@ const TradeHistoryTab = ({
     
     // Listen for position closed events to reload trade history
     const handlePositionClosed = () => {
-      // Wait a bit longer for blockchain to confirm
-      setTimeout(loadTradeHistory, 3000)
+      console.log('[TradeHistory] Position closed event received, reloading...')
+      // Wait longer for blockchain to confirm and Avantis service to index
+      setTimeout(() => {
+        console.log('[TradeHistory] Reloading after position close...')
+        loadTradeHistory()
+      }, 5000) // Increased to 5 seconds for blockchain confirmation
+      
+      // Also reload after 30 seconds in case indexing takes longer
+      setTimeout(() => {
+        console.log('[TradeHistory] Secondary reload after position close...')
+        loadTradeHistory()
+      }, 30000)
     }
     window.addEventListener('position-closed', handlePositionClosed)
     
     // Refresh every 60 seconds
-    const interval = setInterval(loadTradeHistory, 60000)
+    const interval = setInterval(() => {
+      console.log('[TradeHistory] Auto-refreshing trade history...')
+      loadTradeHistory()
+    }, 60000)
     
     return () => {
       clearInterval(interval)
@@ -1497,7 +1523,57 @@ const TradeHistoryTab = ({
   if (error) {
     return (
       <div className="p-4 sm:p-6">
-        <div className="text-center text-[#ef4444] text-sm">{error}</div>
+        <div className="bg-[#2a2a2a] border border-[#ef4444]/30 rounded-lg p-4">
+          <div className="text-center text-[#ef4444] text-sm mb-2">{error}</div>
+          <div className="text-center text-[#9ca3af] text-xs mb-3">
+            {error.includes('Cannot connect') || error.includes('timeout') 
+              ? 'Please ensure the Avantis service is running on port 8000.'
+              : 'This may be normal if you haven\'t closed any trades yet, or the service may need time to index closed positions.'}
+          </div>
+          <div className="text-center">
+            <button
+              onClick={() => {
+                setIsLoading(true)
+                setError(null)
+                const loadTradeHistory = async () => {
+                  if (!authToken) return
+                  
+                  setIsLoading(true)
+                  setError(null)
+                  try {
+                    const response = await fetch('/api/trade-history', {
+                      headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                      },
+                    })
+                    
+                    if (response.ok) {
+                      const data = await response.json()
+                      setTradeHistory(data.trades || [])
+                      if (data.error) {
+                        setError(data.error)
+                      }
+                    } else {
+                      const errorText = await response.text().catch(() => 'Unknown error')
+                      setError(`Failed to load trade history: ${errorText}`)
+                      setTradeHistory([])
+                    }
+                  } catch (err) {
+                    setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
+                    setTradeHistory([])
+                  } finally {
+                    setIsLoading(false)
+                  }
+                }
+                loadTradeHistory()
+              }}
+              className="px-4 py-2 bg-[#8759ff] hover:bg-[#7c4dff] text-white text-xs rounded-lg transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
       </div>
     )
   }
@@ -1506,7 +1582,53 @@ const TradeHistoryTab = ({
     <div className="p-4 sm:p-6">
       <div className="space-y-4">
         <div>
-          <h3 className="text-white font-semibold text-lg mb-4">Trade History</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-white font-semibold text-lg">Trade History</h3>
+            <button
+              onClick={() => {
+                setIsLoading(true)
+                setError(null)
+                const loadTradeHistory = async () => {
+                  if (!authToken) return
+                  
+                  setIsLoading(true)
+                  setError(null)
+                  try {
+                    console.log('[TradeHistory] Manual refresh triggered')
+                    const response = await fetch('/api/trade-history', {
+                      headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                      },
+                    })
+                    
+                    if (response.ok) {
+                      const data = await response.json()
+                      console.log('[TradeHistory] Manual refresh - received data:', { count: data.count, tradesLength: data.trades?.length || 0, error: data.error })
+                      setTradeHistory(data.trades || [])
+                      if (data.error) {
+                        setError(data.error)
+                      }
+                    } else {
+                      const errorText = await response.text().catch(() => 'Unknown error')
+                      setError(`Failed to load trade history: ${errorText}`)
+                      setTradeHistory([])
+                    }
+                  } catch (err) {
+                    setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
+                    setTradeHistory([])
+                  } finally {
+                    setIsLoading(false)
+                  }
+                }
+                loadTradeHistory()
+              }}
+              disabled={isLoading}
+              className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
           {tradeHistory.length > 0 ? (
             <div className="space-y-3">
               {tradeHistory.map((trade, index) => {
