@@ -77,9 +77,11 @@ async def open_position(
         
         logger.info(f"✅ [TRADE_OPS] Address verified: {client_address}")
         
-        # Ensure pair map is initialized from SDK (if available) - sync wrapper
-        from symbols.symbol_registry import ensure_pair_map_initialized_sync
-        ensure_pair_map_initialized_sync()
+        # Ensure pair map is initialized from SDK (if available)
+        # Use the async initializer because we're already in an async context;
+        # the sync wrapper skips SDK refresh when an event loop is running.
+        from symbols.symbol_registry import ensure_pair_map_initialized
+        await ensure_pair_map_initialized()
         
         # Get pair index from our cached registry
         pair_index = get_pair_index(symbol)
