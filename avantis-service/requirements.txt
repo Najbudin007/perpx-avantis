@@ -23,3 +23,7 @@ python-json-logger==2.0.7
 # Utilities
 typing-extensions==4.12.2
 
+# Avantis SDK (recommended for price fetching)
+# If not available, the service will use fallback price calculation from SL/TP
+avantis-trader-sdk==0.8.11
+

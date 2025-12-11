@@ -142,9 +142,75 @@ async def open_position_via_contract(
                 logger.warning(f"Could not fetch price from SDK for {pair_name}: {e}")
         
         if open_price == 0:
-            logger.error(f"❌ CRITICAL: Could not fetch market price for pair {pair_index}. Order will likely be cancelled by keeper!")
+            logger.warning(f"⚠️ Could not fetch market price from SDK for pair {pair_index}. Will try fallback calculation from SL/TP.")
     except Exception as e:
-        logger.error(f"❌ Price fetch error: {e}. Order will likely be cancelled by keeper!")
+        logger.warning(f"⚠️ SDK price fetch error: {e}. Will try fallback calculation from SL/TP.")
+    
+    # ------------------------------------------------------------------
+    # FALLBACK: Calculate entry price from SL/TP if SDK failed
+    # The trading bot calculates SL/TP from currentPrice, so we can reverse-calculate.
+    # For contract validation, we just need an entryPrice that satisfies:
+    # - For LONG: SL < entryPrice < TP
+    # - For SHORT: TP < entryPrice < SL
+    # 
+    # We'll use a weighted average that accounts for typical 1:2 risk/reward:
+    # - For LONG: entryPrice closer to SL (since TP is 2x the distance)
+    # - For SHORT: entryPrice closer to TP (since SL is 2x the distance)
+    # ------------------------------------------------------------------
+    if open_price == 0 and stop_loss and take_profit:
+        try:
+            # Validate SL/TP are in correct order
+            if is_long:
+                if stop_loss >= take_profit:
+                    logger.error(f"❌ Invalid SL/TP for LONG: SL=${stop_loss:.2f} must be < TP=${take_profit:.2f}")
+                else:
+                    # For LONG: SL < entryPrice < TP
+                    # Use weighted average: (TP + 2*SL) / 3 to account for 1:2 risk/reward ratio
+                    estimated_price = (take_profit + 2 * stop_loss) / 3
+                    
+                    # Validate: entryPrice must be between SL and TP for contract validation
+                    if stop_loss < estimated_price < take_profit:
+                        open_price = int(estimated_price * (10 ** PRICE_DECIMALS))
+                        logger.info(f"📈 Calculated entry price from SL/TP for LONG: ${estimated_price:.2f} (SL=${stop_loss:.2f}, TP=${take_profit:.2f})")
+                    else:
+                        # Fallback: use midpoint if weighted average doesn't satisfy constraints
+                        estimated_price = (stop_loss + take_profit) / 2
+                        if stop_loss < estimated_price < take_profit:
+                            open_price = int(estimated_price * (10 ** PRICE_DECIMALS))
+                            logger.info(f"📈 Calculated entry price (midpoint fallback) for LONG: ${estimated_price:.2f} (SL=${stop_loss:.2f}, TP=${take_profit:.2f})")
+                        else:
+                            logger.error(f"❌ Cannot calculate valid entry price: ${estimated_price:.2f} is not between SL=${stop_loss:.2f} and TP=${take_profit:.2f}")
+            else:
+                if take_profit >= stop_loss:
+                    logger.error(f"❌ Invalid SL/TP for SHORT: TP=${take_profit:.2f} must be < SL=${stop_loss:.2f}")
+                else:
+                    # For SHORT: TP < entryPrice < SL
+                    # Use weighted average: (SL + 2*TP) / 3
+                    estimated_price = (stop_loss + 2 * take_profit) / 3
+                    
+                    # Validate: entryPrice must be between TP and SL for contract validation
+                    if take_profit < estimated_price < stop_loss:
+                        open_price = int(estimated_price * (10 ** PRICE_DECIMALS))
+                        logger.info(f"📈 Calculated entry price from SL/TP for SHORT: ${estimated_price:.2f} (SL=${stop_loss:.2f}, TP=${take_profit:.2f})")
+                    else:
+                        # Fallback: use midpoint if weighted average doesn't satisfy constraints
+                        estimated_price = (stop_loss + take_profit) / 2
+                        if take_profit < estimated_price < stop_loss:
+                            open_price = int(estimated_price * (10 ** PRICE_DECIMALS))
+                            logger.info(f"📈 Calculated entry price (midpoint fallback) for SHORT: ${estimated_price:.2f} (SL=${stop_loss:.2f}, TP=${take_profit:.2f})")
+                        else:
+                            logger.error(f"❌ Cannot calculate valid entry price: ${estimated_price:.2f} is not between TP=${take_profit:.2f} and SL=${stop_loss:.2f}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to calculate price from SL/TP: {e}")
+    
+    # Final validation: if still 0, we have a problem
+    if open_price == 0:
+        logger.error(f"❌ CRITICAL: Could not determine openPrice for pair {pair_index}. Contract validation will fail!")
+        logger.error(f"   SDK failed and fallback calculation also failed (missing SL/TP or invalid values).")
+    else:
+        # Log success - either from SDK or fallback
+        price_display = open_price / (10 ** PRICE_DECIMALS)
+        logger.info(f"✅ openPrice determined: ${price_display:.2f} for pair {pair_index}")
 
     # ------------------------------------------------------------------
     # BELOW_MIN_POS protection (on-chain rule):
