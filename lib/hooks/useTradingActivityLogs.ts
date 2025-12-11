@@ -326,7 +326,7 @@ export function useTradingActivityLogs() {
           message: `✅ Position opened successfully - ${currentPositions} active position${currentPositions > 1 ? 's' : ''}`,
           details: {
             entryPrice: positionData.positions?.[0]?.entryPrice,
-            leverage: positionData.positions?.[0]?.leverage,
+            leverage: positionData.positions?.[0]?.leverage ? parseFloat(positionData.positions[0].leverage) : undefined,
             budget: positionData.positions?.[0]?.collateral,
           },
         })
