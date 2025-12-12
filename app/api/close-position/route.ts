@@ -56,11 +56,14 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.fid
       const farcasterWalletService = getFarcasterWalletService()
-      const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+      // Use ensureTradingWallet() for consistency with trading/start route
+      // This ensures wallet exists and has valid private key
+      const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
       
       if (!farcasterWallet || !farcasterWallet.privateKey) {
+        console.error(`[ClosePosition] Failed to get trading wallet for FID ${authContext.fid}`)
         return NextResponse.json({ 
-          error: 'No wallet found with private key' 
+          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
       
@@ -68,6 +71,7 @@ export async function POST(request: NextRequest) {
         address: farcasterWallet.address,
         privateKey: farcasterWallet.privateKey
       }
+      console.log(`[ClosePosition] Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
     } else {
       // Web user
       if (!authContext.webUserId) {
@@ -144,9 +148,21 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       console.error(`[ClosePosition] Failed to close position for pair_index ${pairIndex}:`, error)
       const errorMessage = error instanceof Error ? error.message : 'Failed to close position'
+      
+      // Provide more detailed error message for Farcaster users
+      let userFriendlyError = errorMessage
+      if (errorMessage.includes('No trading wallet')) {
+        userFriendlyError = 'Trading wallet not found. Please restart your trading session.'
+      } else if (errorMessage.includes('No open trade found')) {
+        userFriendlyError = 'Position not found. It may have already been closed.'
+      } else if (errorMessage.includes('execution reverted')) {
+        userFriendlyError = 'Transaction failed on blockchain. Please try again.'
+      }
+      
       return NextResponse.json({
         success: false,
-        error: errorMessage
+        error: userFriendlyError,
+        details: process.env.NODE_ENV === 'development' ? errorMessage : undefined
       }, { status: 400 })
     }
 

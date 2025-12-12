@@ -38,13 +38,17 @@ export async function GET(request: NextRequest) {
       }
       
       // Get user's backend trading wallet (must have private key for automated trading)
+      // Use ensureTradingWallet() for consistency with trading/start route
       const farcasterWalletService = getFarcasterWalletService()
-      const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+      const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
       if (farcasterWallet && farcasterWallet.privateKey) {
         wallet = {
           address: farcasterWallet.address,
           privateKey: farcasterWallet.privateKey
         }
+        console.log(`[Positions] Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
+      } else {
+        console.error(`[Positions] Failed to get trading wallet for FID ${authContext.fid}`)
       }
     } else {
       // Web user
@@ -80,44 +84,68 @@ export async function GET(request: NextRequest) {
       })
     }
     
+    // Store privateKey in a const to satisfy TypeScript
+    const privateKey = wallet.privateKey
 
-    // Try to get positions from trading engine first
+    // Try to get positions from trading engine first (with retry logic)
     const tradingEngineUrl = process.env.TRADING_ENGINE_URL || 'http://localhost:3001'
     
+    const fetchWithRetry = async (retries = 2): Promise<any> => {
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const url = `${tradingEngineUrl}/api/positions?privateKey=${encodeURIComponent(privateKey)}`
+          
+          // Increase timeout to 60 seconds for position fetching
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), 60000)
+          
+          const tradingResponse = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal
+          })
+          
+          clearTimeout(timeoutId)
+          
+          if (tradingResponse.ok) {
+            const tradingData = await tradingResponse.json()
+            return {
+              positions: tradingData.positions || [],
+              totalPnL: tradingData.totalPnL || 0,
+              openPositions: tradingData.openPositions || 0
+            }
+          } else {
+            const errorText = await tradingResponse.text().catch(() => 'Unknown error')
+            console.error(`[API] Trading engine error (attempt ${attempt + 1}/${retries + 1}): ${errorText}`)
+            if (attempt < retries) {
+              await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))) // Exponential backoff
+              continue
+            }
+          }
+        } catch (tradingError) {
+          if (tradingError instanceof Error && tradingError.name === 'AbortError') {
+            console.error(`[API] Trading engine timeout (attempt ${attempt + 1}/${retries + 1})`)
+          } else {
+            console.error(`[API] Trading engine error (attempt ${attempt + 1}/${retries + 1}):`, tradingError)
+          }
+          if (attempt < retries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))) // Exponential backoff
+            continue
+          }
+        }
+      }
+      return null
+    }
+    
     try {
-      const url = `${tradingEngineUrl}/api/positions?privateKey=${encodeURIComponent(wallet.privateKey)}`
-      
-      // Increase timeout to 60 seconds for position fetching
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 60000)
-      
-      const tradingResponse = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal
-      })
-      
-      clearTimeout(timeoutId)
-      
-      if (tradingResponse.ok) {
-        const tradingData = await tradingResponse.json()
-        return NextResponse.json({
-          positions: tradingData.positions || [],
-          totalPnL: tradingData.totalPnL || 0,
-          openPositions: tradingData.openPositions || 0
-        })
-      } else {
-        const errorText = await tradingResponse.text().catch(() => 'Unknown error')
-        console.error(`[API] Trading engine error: ${errorText}`)
+      const tradingData = await fetchWithRetry()
+      if (tradingData) {
+        return NextResponse.json(tradingData)
       }
-    } catch (tradingError) {
-      if (tradingError instanceof Error && tradingError.name === 'AbortError') {
-        console.error('[API] Trading engine timeout after 60s')
-      } else {
-        console.error('[API] Trading engine not available:', tradingError)
-      }
+    } catch (error) {
+      console.error('[API] Failed to fetch from trading engine after retries:', error)
     }
 
     // Fallback: Fetch positions directly from Avantis

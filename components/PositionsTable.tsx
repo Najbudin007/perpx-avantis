@@ -75,8 +75,8 @@ function EditTPSLModal({
   const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
   
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-[#1a1a1a] rounded-xl w-full max-w-md border border-[#374151]">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-[#1a1a1a] rounded-xl w-full max-w-md border border-[#374151] max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="p-6 pb-0">
           <h2 className="text-white text-xl font-semibold mb-4">Adjust Position</h2>
@@ -107,25 +107,25 @@ function EditTPSLModal({
         </div>
         
         {/* Position Info */}
-        <div className="p-6">
-          <div className="bg-[#2a2a2a] rounded-lg p-4 mb-6">
-            <div className="flex justify-between items-start">
-              <div>
+        <div className="p-6 overflow-y-auto max-h-[calc(90vh-200px)]">
+          <div className="bg-[#2a2a2a] rounded-lg p-4 mb-6 min-w-0">
+            <div className="flex justify-between items-start gap-4">
+              <div className="min-w-0 flex-1">
                 <span className={`text-sm font-medium ${
                   position.side === 'long' ? 'text-[#27c47d]' : 'text-[#ef4444]'
                 }`}>
                   {position.side.toUpperCase()} {leverageNum}x
                 </span>
                 <div className="flex items-center gap-2 mt-1">
-                  <span className="text-white font-medium">{position.coin}</span>
-                  <span className="text-[#f7931a]">₿</span>
+                  <span className="text-white font-medium truncate">{position.coin}</span>
+                  <span className="text-[#f7931a] flex-shrink-0">₿</span>
                 </div>
               </div>
-              <div className="text-right">
+              <div className="text-right flex-shrink-0">
                 <div className="text-[#9ca3af] text-sm">Open price</div>
-                <div className="text-white">{position.entryPrice.toLocaleString()}</div>
+                <div className="text-white text-sm whitespace-nowrap">{position.entryPrice.toLocaleString()}</div>
                 <div className="text-[#9ca3af] text-sm mt-2">Current price</div>
-                <div className="text-white">{position.markPrice.toLocaleString()}</div>
+                <div className="text-white text-sm whitespace-nowrap">{position.markPrice.toLocaleString()}</div>
               </div>
             </div>
           </div>
@@ -140,15 +140,16 @@ function EditTPSLModal({
                   </span>
                   <button className="text-[#60a5fa] text-sm hover:underline">Cancel</button>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 min-w-0">
                   <input
                     type="number"
                     value={slPrice}
                     onChange={(e) => setSlPrice(e.target.value)}
                     placeholder="SL Price"
-                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
+                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa] min-w-0"
+                    style={{ maxWidth: '100%' }}
                   />
-                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2">
+                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2 flex-shrink-0">
                     <input
                       type="number"
                       value={slPercent}
@@ -172,15 +173,16 @@ function EditTPSLModal({
                   </span>
                   <button className="text-[#60a5fa] text-sm hover:underline">Cancel</button>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 min-w-0">
                   <input
                     type="number"
                     value={tpPrice}
                     onChange={(e) => setTpPrice(e.target.value)}
                     placeholder="TP Price"
-                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa]"
+                    className="flex-1 bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#60a5fa] min-w-0"
+                    style={{ maxWidth: '100%' }}
                   />
-                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2">
+                  <div className="flex items-center bg-[#2a2a2a] border border-[#374151] rounded-lg px-4 py-3 gap-2 flex-shrink-0">
                     <input
                       type="number"
                       value={tpPercent}

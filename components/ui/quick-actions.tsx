@@ -162,7 +162,7 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
   }, [position, newTp, newSl, onUpdate, addToast])
 
   return (
-    <div className={`flex flex-col gap-2 ${className}`}>
+    <div className={`flex flex-col gap-2 max-w-full overflow-hidden ${className}`}>
       {!showTpSlForm ? (
         <>
           <Button
@@ -191,45 +191,48 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
           </Button>
         </>
       ) : (
-        <div className="space-y-2 p-3 bg-[#1f2937] border border-[#374151] rounded-lg">
-          <div className="space-y-2">
-            <div>
-              <label className="block text-xs text-[#9ca3af] mb-1">Take Profit</label>
+        <div className="space-y-2 p-3 bg-[#1f2937] border border-[#374151] rounded-lg max-w-full overflow-hidden">
+          <div className="space-y-2 min-w-0">
+            <div className="min-w-0">
+              <label className="block text-xs text-[#9ca3af] mb-1 truncate">Take Profit</label>
               <input
                 type="number"
                 value={newTp}
                 onChange={(e) => setNewTp(e.target.value)}
                 placeholder={position.takeProfit?.toString() || 'Enter TP'}
-                className="w-full bg-[#2a2a2a] border border-[#444] text-white text-sm rounded px-2 py-1"
+                className="w-full bg-[#2a2a2a] border border-[#444] text-white text-sm rounded px-2 py-1 min-w-0"
+                style={{ maxWidth: '100%' }}
               />
             </div>
-            <div>
-              <label className="block text-xs text-[#9ca3af] mb-1">Stop Loss</label>
+            <div className="min-w-0">
+              <label className="block text-xs text-[#9ca3af] mb-1 truncate">Stop Loss</label>
               <input
                 type="number"
                 value={newSl}
                 onChange={(e) => setNewSl(e.target.value)}
                 placeholder={position.stopLoss?.toString() || 'Enter SL'}
-                className="w-full bg-[#2a2a2a] border border-[#444] text-white text-sm rounded px-2 py-1"
+                className="w-full bg-[#2a2a2a] border border-[#444] text-white text-sm rounded px-2 py-1 min-w-0"
+                style={{ maxWidth: '100%' }}
               />
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 min-w-0">
             <Button
               onClick={handleUpdateTpSl}
               disabled={isUpdating || isClosing}
-              className="flex-1 bg-[#8759ff] hover:bg-[#7C3AED] text-white text-sm py-1.5 disabled:opacity-50"
+              className="flex-1 bg-[#8759ff] hover:bg-[#7C3AED] text-white text-sm py-1.5 disabled:opacity-50 min-w-0"
+              style={{ maxWidth: '100%' }}
             >
               {isUpdating ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <span className="flex items-center justify-center gap-2 truncate">
+                  <svg className="w-4 h-4 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  Updating...
+                  <span className="truncate">Updating...</span>
                 </span>
               ) : (
-                'Update'
+                <span className="truncate">Update</span>
               )}
             </Button>
             <Button
@@ -239,7 +242,7 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
                 setNewSl('')
               }}
               disabled={isUpdating || isClosing}
-              className="bg-[#2a2a2a] hover:bg-[#374151] text-white text-sm py-1.5 px-3 disabled:opacity-50"
+              className="bg-[#2a2a2a] hover:bg-[#374151] text-white text-sm py-1.5 px-3 disabled:opacity-50 flex-shrink-0"
             >
               Cancel
             </Button>

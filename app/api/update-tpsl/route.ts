@@ -32,12 +32,16 @@ export async function POST(request: NextRequest) {
       }
       
       const farcasterWalletService = getFarcasterWalletService()
-      const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+      // Use ensureTradingWallet() for consistency with trading/start route
+      const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
       if (farcasterWallet && farcasterWallet.privateKey) {
         wallet = {
           address: farcasterWallet.address,
           privateKey: farcasterWallet.privateKey
         }
+        console.log(`[UpdateTP/SL] Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
+      } else {
+        console.error(`[UpdateTP/SL] Failed to get trading wallet for FID ${authContext.fid}`)
       }
     } else {
       // Web user
@@ -59,7 +63,9 @@ export async function POST(request: NextRequest) {
     }
     
     if (!wallet || !wallet.privateKey) {
-      return NextResponse.json({ error: 'No trading wallet found' }, { status: 400 })
+      return NextResponse.json({ 
+        error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
+      }, { status: 400 })
     }
     
     const body = await request.json()
@@ -90,8 +96,20 @@ export async function POST(request: NextRequest) {
     if (!avantisResponse.ok) {
       const errorData = await avantisResponse.json().catch(() => ({ detail: 'Failed to update TP/SL' }))
       console.error('[API] Avantis error:', errorData)
+      
+      // Provide more detailed error message for Farcaster users
+      let userFriendlyError = errorData.detail || 'Failed to update TP/SL'
+      if (userFriendlyError.includes('No open trade found')) {
+        userFriendlyError = 'Position not found. It may have been closed.'
+      } else if (userFriendlyError.includes('execution reverted')) {
+        userFriendlyError = 'Transaction failed on blockchain. Please try again.'
+      }
+      
       return NextResponse.json(
-        { error: errorData.detail || 'Failed to update TP/SL' },
+        { 
+          error: userFriendlyError,
+          details: process.env.NODE_ENV === 'development' ? errorData.detail : undefined
+        },
         { status: avantisResponse.status }
       )
     }

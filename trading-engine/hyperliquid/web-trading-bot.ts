@@ -242,8 +242,21 @@ export class WebTradingBot {
         let positions: any[] = [];
         if (this.config && this.config.privateKey) {
           try {
+            const previousPositionCount = this.openPositions;
             positions = await getAvantisPositions(this.config.privateKey);
             log('AVANTIS', `📊 Fetched ${positions.length} position(s) from Avantis dashboard`);
+            
+            // CRITICAL: Detect manual position close
+            // If position count decreased and we didn't close it ourselves, user likely closed it manually
+            if (previousPositionCount > 0 && positions.length < previousPositionCount) {
+              const closedCount = previousPositionCount - positions.length;
+              log('WEB_BOT', `⚠️ Position count decreased from ${previousPositionCount} to ${positions.length} (${closedCount} position(s) closed)`);
+              log('WEB_BOT', `⚠️ This may indicate a manual position close by the user.`);
+              log('WEB_BOT', `🛑 Manual position close detected. Will not open new positions this cycle.`);
+            }
+            
+            // Update openPositions to match actual count
+            this.openPositions = positions.length;
           } catch (err) {
             log('ERROR', `Failed to get Avantis positions: ${err}`);
             // Don't fallback to Hyperliquid - we only use Avantis
@@ -253,7 +266,6 @@ export class WebTradingBot {
           log('WARN', `No private key available - cannot fetch Avantis positions`);
           positions = [];
         }
-        this.openPositions = positions.length;
         log('WEB_BOT', `Open positions: ${positions.length}`);
 
         // Check for take profit on existing positions - Skip for Avantis-only trading
@@ -275,7 +287,11 @@ export class WebTradingBot {
         log('WEB_BOT', `Market regime: ${marketRegime}`);
 
         // Only open new positions if we're under the limit
-        if (positions.length < maxPerSession) {
+        // Also check if position count decreased (manual close detection)
+        const shouldOpenNewPositions = positions.length < maxPerSession && 
+                                       positions.length >= this.openPositions; // Don't open if position was just closed
+        
+        if (shouldOpenNewPositions) {
           // Get available trading symbols - prioritize BTC and ETH
           const tokens = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'LINK', 'UNI', 'ATOM'];
           let slotsLeft = maxPerSession - positions.length;
@@ -398,6 +414,7 @@ export class WebTradingBot {
                   if (avantisResult && avantisResult.success) {
                     // Increment daily trade counter
                     this.tradesOpenedToday++;
+                    entriesThis++; // CRITICAL: Increment immediately to prevent opening multiple positions
                     
                     log('AVANTIS', `✅✅✅ Position SUCCESSFULLY opened on Avantis Dashboard!`);
                     log('AVANTIS', `   Symbol: ${symbol} | Direction: ${isLong ? 'LONG' : 'SHORT'}`);
@@ -410,6 +427,25 @@ export class WebTradingBot {
                     log('AVANTIS', `   📊 Visit avantisfi.com and connect your backend wallet`);
                     log('AVANTIS', `   📊 The position will appear in "Current Positions" section`);
                     log('AVANTIS', `   ==========================================`);
+                    
+                    // CRITICAL: If maxPerSession is 1, immediately break out of symbol loop
+                    // This prevents opening multiple positions when user only wants one
+                    if (maxPerSession === 1) {
+                      log('WEB_BOT', `🛑 Max positions reached (1). Stopping position evaluation.`);
+                      return { 
+                        symbol, 
+                        result: { 
+                          positionOpened: true, 
+                          marketRegime, 
+                          reason: "executed_on_avantis", 
+                          signalScore,
+                          avantisTxHash: avantisResult.tx_hash,
+                          avantisPairIndex: avantisResult.pair_index
+                        },
+                        stopEvaluating: true // Signal to break out of loop
+                      };
+                    }
+                    
                     return { 
                       symbol, 
                       result: { 
@@ -474,9 +510,22 @@ export class WebTradingBot {
               const { symbol: evalSymbol, result } = evalResult;
               const { positionOpened, signalScore, reason } = result;
               
+              // Check if we should stop evaluating (e.g., maxPerSession=1 and position opened)
+              if ((result as any).stopEvaluating) {
+                log('WEB_BOT', `🛑 Stopping position evaluation after opening ${evalSymbol} (maxPerSession=${maxPerSession})`);
+                break; // Break out of symbol loop immediately
+              }
+              
               if (positionOpened) {
                 entriesThis++;
                 this.openPositions++;
+                
+                // CRITICAL: Double-check position count after opening
+                // If maxPerSession is 1, we should stop immediately
+                if (maxPerSession === 1 && entriesThis >= 1) {
+                  log('WEB_BOT', `🛑 Max positions reached (${entriesThis}/${maxPerSession}). Stopping position evaluation.`);
+                  break; // Break out of symbol loop
+                }
                 slotsLeft--; // Decrease available slots immediately
                 log('WEB_BOT', `✅ ${evalSymbol} opened | Score=${signalScore} | Entries: ${entriesThis}/${maxPerSession}`);
                 log('WEB_BOT', `📊 Total open positions: ${this.openPositions}, Slots remaining: ${slotsLeft}`);
