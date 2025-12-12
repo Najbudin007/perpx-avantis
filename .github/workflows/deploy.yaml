@@ -143,6 +143,7 @@ jobs:
             echo "ENCRYPTION_SECRET=${{ secrets.ENCRYPTION_SECRET }}" >> .env.trading
             echo "TRADING_ENGINE_URL=${{ secrets.TRADING_ENGINE_URL }}" >> .env.trading
             echo "AVANTIS_API_URL=${{ secrets.AVANTIS_API_URL }}" >> .env.trading
+            echo "NEXT_PUBLIC_AVANTIS_API_URL=${{ secrets.AVANTIS_API_URL }}" >> .env.trading
             echo "AVANTIS_NETWORK=${{ secrets.AVANTIS_NETWORK }}" >> .env.trading
             echo "JWT_EXPIRATION_TIME=${{ secrets.JWT_EXPIRATION_TIME }}" >> .env.trading
             echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env.trading
@@ -158,6 +159,7 @@ jobs:
             echo "ENCRYPTION_SECRET=${{ secrets.ENCRYPTION_SECRET }}" >> .env.web
             echo "TRADING_ENGINE_URL=${{ secrets.TRADING_ENGINE_URL }}" >> .env.web
             echo "AVANTIS_API_URL=${{ secrets.AVANTIS_API_URL }}" >> .env.web
+            echo "NEXT_PUBLIC_AVANTIS_API_URL=${{ secrets.AVANTIS_API_URL }}" >> .env.web
             echo "AVANTIS_NETWORK=${{ secrets.AVANTIS_NETWORK }}" >> .env.web
             echo "JWT_EXPIRATION_TIME=${{ secrets.JWT_EXPIRATION_TIME }}" >> .env.web
             echo "BASE_RPC_URL=${{ secrets.BASE_RPC_URL }}" >> .env.web
