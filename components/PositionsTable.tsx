@@ -4,12 +4,14 @@ import { useState, useEffect, useMemo } from 'react'
 import type { Position } from '@/types/trading'
 import { useLivePrices } from '@/lib/hooks/useLivePrices'
 import { useAuth } from '@/lib/auth/AuthContext'
+import { useToast } from '@/components/ui/toast'
 
 interface PositionsTableProps {
   positions: Position[]
   isLoading?: boolean
   onClosePosition?: (position: Position) => Promise<void>
   onEditPosition?: (position: Position) => void
+  hasStaleData?: boolean // Indicates we have stale data (background refresh in progress)
 }
 
 // Helper function to calculate PnL from price update (matches backend logic)
@@ -309,12 +311,13 @@ function ClosePositionModal({
   )
 }
 
-export function PositionsTable({ positions, isLoading = false, onClosePosition, onEditPosition }: PositionsTableProps) {
+export function PositionsTable({ positions, isLoading = false, onClosePosition, onEditPosition, hasStaleData = false }: PositionsTableProps) {
   const [editingPosition, setEditingPosition] = useState<Position | null>(null)
   const [closingPosition, setClosingPosition] = useState<Position | null>(null)
   const [isClosing, setIsClosing] = useState(false)
   const [isUpdatingTPSL, setIsUpdatingTPSL] = useState(false)
   const { token } = useAuth()
+  const { addToast } = useToast()
   
   // Extract unique symbols from positions for price polling
   const symbols = useMemo(() => {
@@ -369,8 +372,19 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
     try {
       await onClosePosition(closingPosition)
       setClosingPosition(null)
+      addToast({
+        type: 'success',
+        title: 'Position Closed',
+        message: `Successfully closed ${closingPosition.coin || closingPosition.symbol} position`,
+      })
     } catch (error) {
       console.error('Failed to close position:', error)
+      const errorMessage = error instanceof Error ? error.message : 'Failed to close position'
+      addToast({
+        type: 'error',
+        title: 'Close Failed',
+        message: errorMessage,
+      })
     } finally {
       setIsClosing(false)
     }
@@ -409,16 +423,29 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
       console.log('[PositionsTable] TP/SL updated successfully')
       setEditingPosition(null)
       
-      // Refresh positions after update
-      if (onEditPosition) {
-        setTimeout(() => {
-          // Trigger refresh by calling parent
-          window.location.reload() // Simple refresh for now
-        }, 1000)
-      }
+      addToast({
+        type: 'success',
+        title: 'TP/SL Updated',
+        message: 'Take Profit and Stop Loss updated successfully',
+      })
+      
+      // Refresh positions after update by dispatching event
+      // This works in both web and Farcaster app
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('position-updated'))
+        // Also call parent callback if provided
+        if (onEditPosition) {
+          onEditPosition(editingPosition)
+        }
+      }, 500)
     } catch (error) {
       console.error('[PositionsTable] Failed to update TP/SL:', error)
-      alert(error instanceof Error ? error.message : 'Failed to update TP/SL')
+      const errorMessage = error instanceof Error ? error.message : 'Failed to update TP/SL'
+      addToast({
+        type: 'error',
+        title: 'Update Failed',
+        message: errorMessage,
+      })
     } finally {
       setIsUpdatingTPSL(false)
     }
@@ -437,7 +464,10 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
     )
   }
   
-  if (positions.length === 0) {
+  // 🛑 STALE-WHILE-REVALIDATE: Only show empty state if we truly have no positions
+  // AND we're not in a background refresh (hasStaleData means keep showing last known data)
+  // If hasStaleData is true, we should never show empty state - the hook should preserve positions
+  if (positions.length === 0 && !hasStaleData && !isLoading) {
     return (
       <div className="bg-[#1a1a1a] rounded-lg p-8 text-center">
         <div className="w-16 h-16 bg-[#2a2a2a] rounded-full flex items-center justify-center mx-auto mb-4">
@@ -449,6 +479,21 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
         <p className="text-[#9ca3af] text-sm">
           Your active positions will appear here once opened
         </p>
+      </div>
+    )
+  }
+  
+  // 🛑 STALE-WHILE-REVALIDATE: If we have stale data flag but empty positions array,
+  // this should never happen (hook should preserve positions), but as a safety net,
+  // show a stable placeholder instead of empty state to prevent flicker
+  if (positions.length === 0 && hasStaleData) {
+    // This is a safety net - the hook should never let this happen
+    // But if it does, show stable placeholder instead of empty state
+    console.warn('[PositionsTable] hasStaleData=true but positions array is empty - this should not happen');
+    return (
+      <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
+        <div className="h-10 bg-[#2a2a2a] border-b border-[#374151]"></div>
+        {/* Stable placeholder - prevents flicker during background refresh */}
       </div>
     )
   }

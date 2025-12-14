@@ -38,6 +38,7 @@ export function usePositions() {
   const [positionData, setPositionData] = useState<PositionData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasStaleData, setHasStaleData] = useState(false); // Track if we have stale data during background refresh
   
   // 🛑 HARD FETCH LOCK - prevents concurrent requests
   const isFetchingRef = useRef(false);
@@ -45,6 +46,7 @@ export function usePositions() {
   const lastWalletRef = useRef<string | null>(null);
   const openPositionsCountRef = useRef(0); // Track position count as primitive
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasEverLoadedRef = useRef(false); // Track if we've ever successfully loaded positions
   
   // Extract wallet address as primitive (stable dependency)
   const walletAddress = useRef<string | null>(null);
@@ -82,9 +84,16 @@ export function usePositions() {
     lastFetchTimeRef.current = now;
     lastWalletRef.current = wallet;
 
-    // Only set loading for initial load
+    // 🛑 STALE-WHILE-REVALIDATE: Only set loading for initial load (no existing data)
+    // During background refresh, keep existing data visible - never show loading state
+    const isBackgroundRefresh = !!positionData;
+    
     if (!positionData) {
       setIsLoading(true);
+      setHasStaleData(false);
+    } else {
+      // Background refresh - mark that we have stale data to keep UI stable
+      setHasStaleData(true);
     }
 
     try {
@@ -142,8 +151,14 @@ export function usePositions() {
         return;
       }
       
-      // 🛑 UI STATE STABLE: Only update if we have valid positions data
-      if (data.positions && Array.isArray(data.positions)) {
+      // 🛑 STALE-WHILE-REVALIDATE: Always preserve existing data during background refresh
+      // Never clear positions - only update when we have valid new data
+      const hasExistingPositions = positionData && positionData.openPositions > 0;
+      const isBackgroundRefresh = !!positionData; // If we have existing data, this is a background refresh
+      
+      // Check if we have valid positions array (non-empty)
+      if (data.positions && Array.isArray(data.positions) && data.positions.length > 0) {
+        // We have non-empty positions - safe to update
         const previousPositionCount = openPositionsCountRef.current;
         const currentPositionCount = data.openPositions || 0;
         openPositionsCountRef.current = currentPositionCount;
@@ -163,8 +178,32 @@ export function usePositions() {
           }
         }
         
-        // Update state with new data
+        // 🛑 STALE-WHILE-REVALIDATE: Update state with new data (smooth transition, no flicker)
+        // This replaces old data with new data atomically - no empty state in between
         setPositionData(data);
+        setHasStaleData(false); // Clear stale flag when we have fresh data
+        hasEverLoadedRef.current = true;
+        setError(null);
+      } else if (data.positions && Array.isArray(data.positions) && data.positions.length === 0) {
+        // Empty positions array from API
+        // 🛑 CRITICAL: Never clear existing positions during background refresh
+        if (!hasExistingPositions && !isBackgroundRefresh) {
+          // No existing positions AND not a background refresh - safe to update to empty (initial load)
+          setPositionData(data);
+          openPositionsCountRef.current = 0;
+          setHasStaleData(false);
+          hasEverLoadedRef.current = true;
+        } else if (hasExistingPositions) {
+          // We have existing positions - this is a background refresh
+          // 🛑 STALE-WHILE-REVALIDATE: Keep existing positions visible - NEVER clear them
+          console.log('[usePositions] Background refresh returned empty positions - keeping existing data visible (stale-while-revalidate)');
+          // DO NOT update positionData - keep stale data visible
+          // Keep hasStaleData = true to indicate we're showing stale data
+          // The positions will remain visible until we get new non-empty data
+        } else {
+          // No existing positions but this is a background refresh (shouldn't happen, but handle it)
+          console.log('[usePositions] Background refresh with no existing positions - keeping current state');
+        }
         setError(null);
       } else {
         // Invalid data structure - keep existing data
@@ -184,6 +223,8 @@ export function usePositions() {
     } finally {
       setIsLoading(false);
       isFetchingRef.current = false;
+      // Note: hasStaleData is only cleared when we successfully get new data
+      // If fetch fails or returns empty during background refresh, hasStaleData stays true
     }
   }, [token]); // Only depend on token (primitive)
 
@@ -216,9 +257,16 @@ export function usePositions() {
         p.pair_index === positionIdentifier
       );
       
-      const pair_index = position?.pair_index || (typeof positionIdentifier === 'number' ? positionIdentifier : undefined);
+      // Get pair_index - handle 0 as valid value
+      let pair_index: number | undefined;
+      if (position?.pair_index !== undefined && position?.pair_index !== null) {
+        pair_index = position.pair_index;
+      } else if (typeof positionIdentifier === 'number') {
+        pair_index = positionIdentifier;
+      }
       
-      if (!pair_index && typeof positionIdentifier !== 'number') {
+      // Check if pair_index is valid (0 is a valid pair_index, so only check for undefined/null)
+      if (pair_index === undefined || pair_index === null) {
         console.error(`[usePositions] No pair_index found for position ${positionIdentifier}`);
         throw new Error(`Position ${positionIdentifier} does not have a pair_index. Cannot close position.`);
       }
@@ -341,7 +389,21 @@ export function usePositions() {
     fetchPositionsSafe(wallet, false);
   }, [token, walletAddressString]); // Only primitives: token (string) and wallet address (string)
 
-  // Polling interval - use ref for position count to avoid dependency
+  // 🛑 NO POLLING: Positions are static - only prices update in real-time via useLivePrices
+  // Positions should only refresh when:
+  // 1. Position is opened (position-opened event)
+  // 2. Position is closed (position-closed event)  
+  // 3. TP/SL is updated (position-updated event)
+  // 4. User manually refreshes (forceRefreshPositions)
+  // 5. Tab becomes visible after being hidden (single refresh, not polling)
+  
+  // Track if we have position data using ref to avoid dependency
+  const positionDataRef = useRef(positionData);
+  useEffect(() => {
+    positionDataRef.current = positionData;
+  }, [positionData]);
+  
+  // Handle visibility change - refresh once when tab becomes visible (not polling)
   useEffect(() => {
     const wallet = walletAddressString;
     const hasToken = !!token;
@@ -353,20 +415,12 @@ export function usePositions() {
     // Update ref
     walletAddress.current = wallet;
 
-    // Use ref value for polling interval (stable)
-    const pollInterval = openPositionsCountRef.current > 0 ? 60000 : 120000;
-    
-    const interval = setInterval(() => {
-      // Only poll if not already fetching and tab is visible
-      if (!isFetchingRef.current && !document.hidden) {
-        fetchPositionsSafe(wallet, false);
-      }
-    }, pollInterval);
-
-    // Handle visibility change
+    // Only refresh when tab becomes visible (not polling)
     const handleVisibilityChange = () => {
-      if (!document.hidden && !isFetchingRef.current) {
-        // Refresh when tab becomes visible (but respect backoff)
+      if (!document.hidden && !isFetchingRef.current && positionDataRef.current) {
+        // Tab became visible and we have existing data - refresh once to check for changes
+        // This handles cases where user was away and positions might have changed
+        console.log('[usePositions] Tab became visible - refreshing positions once');
         fetchPositionsSafe(wallet, false);
       }
     };
@@ -374,10 +428,9 @@ export function usePositions() {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     
     return () => {
-      clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [token, walletAddressString]); // Only primitives
+  }, [token, walletAddressString]); // Only primitives - use ref for positionData
 
   // Listen for position change events - stable handler
   useEffect(() => {
@@ -391,10 +444,12 @@ export function usePositions() {
     
     window.addEventListener('position-opened', handlePositionChange);
     window.addEventListener('position-closed', handlePositionChange);
+    window.addEventListener('position-updated', handlePositionChange); // Listen for TP/SL updates
     
     return () => {
       window.removeEventListener('position-opened', handlePositionChange);
       window.removeEventListener('position-closed', handlePositionChange);
+      window.removeEventListener('position-updated', handlePositionChange);
     };
   }, []); // Empty deps - handler is stable, uses refs
 
@@ -402,6 +457,7 @@ export function usePositions() {
     positionData,
     isLoading,
     error,
+    hasStaleData, // Expose stale data flag for UI stability
     fetchPositions,
     forceRefreshPositions,
     closePosition,

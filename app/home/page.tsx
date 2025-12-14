@@ -2032,7 +2032,7 @@ export default function HomePage() {
   const { sdk: baseSdk } = useBaseMiniApp()
   
   // Refresh session status when component mounts or when positions change
-  const { positionData, isLoading: positionsLoading, closePosition, fetchPositions } = usePositions()
+  const { positionData, isLoading: positionsLoading, hasStaleData, closePosition, fetchPositions } = usePositions()
   
   // 🛑 STABILIZE: Use refs to avoid function dependency
   const fetchPositionsRef = useRef(fetchPositions);
@@ -2933,6 +2933,7 @@ export default function HomePage() {
                     <PositionsTable
                       positions={positionData?.positions || []}
                       isLoading={positionsLoading}
+                      hasStaleData={hasStaleData}
                       onClosePosition={handleClosePosition}
                     />
                     {/* Show message if no positions but session is running */}
@@ -3187,6 +3188,7 @@ export default function HomePage() {
             <PositionsTable
               positions={positionData?.positions || []}
               isLoading={positionsLoading}
+              hasStaleData={hasStaleData}
               onClosePosition={handleClosePosition}
             />
           </div>

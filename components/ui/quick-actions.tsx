@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react'
 import { Button } from './button'
 import { useToast } from './toast'
-import { getStorageItem } from '@/lib/utils/safeStorage'
+import { useAuth } from '@/lib/auth/AuthContext'
 
 interface QuickActionsProps {
   position: {
@@ -21,6 +21,7 @@ interface QuickActionsProps {
 
 export function QuickActions({ position, onClose, onUpdate, className = '' }: QuickActionsProps) {
   const { addToast } = useToast()
+  const { token } = useAuth()
   const [isClosing, setIsClosing] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
   const [showTpSlForm, setShowTpSlForm] = useState(false)
@@ -37,9 +38,17 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
       return
     }
 
+    if (!token) {
+      addToast({
+        type: 'error',
+        title: 'Authentication required',
+        message: 'Please log in to close positions',
+      })
+      return
+    }
+
     setIsClosing(true)
     try {
-      const token = getStorageItem('token', '')
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000)
 
@@ -106,13 +115,21 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
       return
     }
 
+    if (!token) {
+      addToast({
+        type: 'error',
+        title: 'Authentication required',
+        message: 'Please log in to update TP/SL',
+      })
+      return
+    }
+
     setIsUpdating(true)
     try {
-      const token = getStorageItem('token', '')
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000)
 
-      const response = await fetch('/api/update-tp-sl', {
+      const response = await fetch('/api/update-tpsl', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -120,7 +137,6 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
         },
         body: JSON.stringify({
           pair_index: position.pair_index,
-          trade_index: position.index || 0,
           new_tp: newTp ? parseFloat(newTp) : null,
           new_sl: newSl ? parseFloat(newSl) : null,
         }),
@@ -159,7 +175,7 @@ export function QuickActions({ position, onClose, onUpdate, className = '' }: Qu
     } finally {
       setIsUpdating(false)
     }
-  }, [position, newTp, newSl, onUpdate, addToast])
+  }, [position, newTp, newSl, onUpdate, addToast, token])
 
   return (
     <div className={`flex flex-col gap-2 max-w-full overflow-hidden ${className}`}>
