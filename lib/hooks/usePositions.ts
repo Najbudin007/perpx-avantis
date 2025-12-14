@@ -87,11 +87,22 @@ export function usePositions() {
     }
 
     // Prevent concurrent fetches (but allow forced fetches)
+    // Add throttling: don't fetch if last fetch was less than 2 seconds ago (unless forced)
+    const now = Date.now();
+    const lastFetchTime = (fetchPositions as any).lastFetchTime || 0;
+    const timeSinceLastFetch = now - lastFetchTime;
+    
+    if (!force && timeSinceLastFetch < 2000) {
+      console.log('[usePositions] Throttling: skipping fetch (too soon after last fetch)');
+      return;
+    }
+    
     if (fetchInProgressRef.current && !force) {
       return;
     }
 
     fetchInProgressRef.current = true;
+    (fetchPositions as any).lastFetchTime = now;
     // Only set loading state for initial load, never for background refreshes
     if (!positionData) {
       setIsLoading(true);
@@ -120,6 +131,25 @@ export function usePositions() {
       clearTimeout(timeoutId);
       
       if (!response.ok) {
+        // Handle rate limit errors gracefully (429)
+        if (response.status === 429) {
+          const errorData = await response.json().catch(() => ({}));
+          const retryAfter = errorData.retry_after || 2; // Default 2 seconds
+          
+          console.warn('[usePositions] Rate limited, will retry after', retryAfter, 'seconds');
+          
+          // Don't show error to user, just retry after the specified delay
+          // Keep existing position data (don't clear it)
+          setTimeout(() => {
+            if (!fetchInProgressRef.current) {
+              fetchPositions(false); // Retry without force flag
+            }
+          }, retryAfter * 1000);
+          
+          // Return early without updating state (keeps cached data visible)
+          return;
+        }
+        
         const errorText = await response.text().catch(() => 'Unknown error');
         console.error('[usePositions] API error:', {
           status: response.status,
@@ -370,11 +400,11 @@ export function usePositions() {
             return;
           }
 
-          // Poll with reduced frequency to reduce server load
-          // Poll every 30 seconds when positions exist
-          // Poll every 60 seconds when no positions
-          // Backend caching (20s TTL) ensures fresh data without excessive RPC calls
-          const pollInterval = positionData && positionData.openPositions > 0 ? 30000 : 60000;
+          // Poll with reduced frequency to reduce server load and avoid rate limiting
+          // Poll every 45 seconds when positions exist (increased from 30s)
+          // Poll every 90 seconds when no positions (increased from 60s)
+          // Backend caching (30s TTL) ensures fresh data without excessive RPC calls
+          const pollInterval = positionData && positionData.openPositions > 0 ? 45000 : 90000;
           interval = setInterval(async () => {
             // Only fetch if we have a token and not already in progress
             if (token && !fetchInProgressRef.current && !document.hidden) {

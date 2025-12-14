@@ -447,7 +447,7 @@ async def api_get_positions(
         positions = await cache.get_or_compute(
             "positions",
             _fetch_positions,
-            ttl=20.0,  # Cache for 20 seconds
+            ttl=30.0,  # Cache for 30 seconds (increased to reduce requests and rate limiting)
             private_key=private_key,
             address=address
         )
