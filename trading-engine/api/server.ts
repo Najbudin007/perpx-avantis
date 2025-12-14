@@ -454,9 +454,42 @@ app.get('/api/positions', async (req, res) => {
     // Get positions from Avantis service using private key
     const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
     
-      // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
+    // Check if Avantis service is available before making request
+    // This prevents log spam from connection refused errors
+    try {
+      // Quick health check (with short timeout)
+      const healthController = new AbortController();
+      const healthTimeout = setTimeout(() => healthController.abort(), 2000); // 2 second timeout for health check
+      
+      const healthResponse = await fetch(`${avantisApiUrl}/health`, {
+        method: 'GET',
+        signal: healthController.signal,
+      }).catch(() => null);
+      
+      clearTimeout(healthTimeout);
+      
+      if (!healthResponse || !healthResponse.ok) {
+        // Avantis service not available - return empty positions instead of error
+        console.log(`[API] Avantis service not available at ${avantisApiUrl}, returning empty positions`);
+        return {
+          positions: [],
+          totalPnL: 0,
+          openPositions: 0
+        };
+      }
+    } catch (healthError) {
+      // Service not available - return empty positions
+      console.log(`[API] Avantis service health check failed, returning empty positions`);
+      return {
+        positions: [],
+        totalPnL: 0,
+        openPositions: 0
+      };
+    }
+    
+    // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
     
     try {
       const avantisResponse = await fetch(`${avantisApiUrl}/api/positions?private_key=${encodeURIComponent(privateKey as string)}`, {

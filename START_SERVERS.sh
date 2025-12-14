@@ -28,20 +28,20 @@ check_port() {
 }
 
 # Start Avantis Service
-echo -e "${BLUE}1️⃣  Starting Avantis Service (Port 3002)...${NC}"
-if check_port 3002; then
+echo -e "${BLUE}1️⃣  Starting Avantis Service (Port 8000)...${NC}"
+if check_port 8000; then
     cd "$SCRIPT_DIR/avantis-service"
     if [ -d "venv" ]; then
         source venv/bin/activate
-        python -m uvicorn main:app --host 0.0.0.0 --port 3002 --reload > /tmp/avantis-service.log 2>&1 &
+        python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload > /tmp/avantis-service.log 2>&1 &
     else
-        python3 -m uvicorn main:app --host 0.0.0.0 --port 3002 --reload > /tmp/avantis-service.log 2>&1 &
+        python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload > /tmp/avantis-service.log 2>&1 &
     fi
     AVANTIS_PID=$!
-    echo -e "${GREEN}   ✅ Avantis Service started (PID: $AVANTIS_PID)${NC}"
+    echo -e "${GREEN}   ✅ Avantis Service started (PID: $AVANTIS_PID) on port 8000${NC}"
     sleep 3
 else
-    echo -e "${YELLOW}   ⚠️  Skipping Avantis Service (port in use)${NC}"
+    echo -e "${YELLOW}   ⚠️  Skipping Avantis Service (port 8000 in use)${NC}"
 fi
 
 # Start Trading Engine
@@ -72,7 +72,7 @@ echo ""
 echo -e "${GREEN}✅ All services started!${NC}"
 echo ""
 echo "📊 Service Status:"
-echo "  - Avantis Service: http://localhost:3002/health"
+echo "  - Avantis Service: http://localhost:8000/health"
 echo "  - Trading Engine:  http://localhost:3001"
 echo "  - Frontend:        http://localhost:3000"
 echo ""

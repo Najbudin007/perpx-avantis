@@ -29,6 +29,7 @@ export interface PositionData {
   positions: Position[];
   totalPnL: number;
   openPositions: number;
+  error?: string; // Optional error message from API
 }
 
 export function usePositions() {
@@ -77,6 +78,7 @@ export function usePositions() {
     return true;
   }, [token]); // Only depend on token
 
+  // Define fetchPositions first (before forceRefreshPositions to avoid hoisting issue)
   const fetchPositions = useCallback(async (force = false) => {
     // Authentication is required
     if (!token) {
@@ -113,10 +115,56 @@ export function usePositions() {
       clearTimeout(timeoutId);
       
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const errorText = await response.text().catch(() => 'Unknown error');
+        console.error('[usePositions] API error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText
+        });
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
       
       const data = await response.json();
+      
+      // Log position data for debugging
+      const previousPositionCount = positionData?.openPositions || 0
+      const currentPositionCount = data.openPositions || 0
+      
+      console.log('[usePositions] Fetched position data:', {
+        positionsCount: data.positions?.length || 0,
+        openPositions: currentPositionCount,
+        previousOpenPositions: previousPositionCount,
+        totalPnL: data.totalPnL || 0,
+        hasError: !!data.error,
+        error: data.error
+      });
+      
+      // Validate position data structure
+      if (data.positions && Array.isArray(data.positions)) {
+        console.log('[usePositions] Position details:', data.positions.map((p: any) => ({
+          symbol: p.symbol || p.coin,
+          pair_index: p.pair_index,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          pnl: p.pnl
+        })));
+      }
+      
+      // Dispatch event if position count changed (for other components to react)
+      if (currentPositionCount !== previousPositionCount) {
+        if (currentPositionCount > previousPositionCount) {
+          console.log('[usePositions] Position opened! Dispatching position-opened event')
+          window.dispatchEvent(new CustomEvent('position-opened', { 
+            detail: { count: currentPositionCount, previousCount: previousPositionCount }
+          }))
+        } else if (currentPositionCount < previousPositionCount) {
+          console.log('[usePositions] Position closed! Dispatching position-closed event')
+          window.dispatchEvent(new CustomEvent('position-closed', { 
+            detail: { count: currentPositionCount, previousCount: previousPositionCount }
+          }))
+        }
+      }
+      
       setPositionData(data);
       retryCountRef.current = 0;
       setError(null);
@@ -137,7 +185,13 @@ export function usePositions() {
       setIsLoading(false);
       fetchInProgressRef.current = false;
     }
-  }, [token]); // Only depend on token
+  }, [token]); // Only depend on token - positionData is used for comparison but shouldn't trigger re-creation
+
+  // Force refresh positions (defined after fetchPositions to avoid hoisting issue)
+  const forceRefreshPositions = useCallback(async () => {
+    console.log('[usePositions] Force refreshing positions...')
+    await fetchPositions(true)
+  }, [fetchPositions])
 
   const closePositionInProgressRef = useRef<Set<string>>(new Set());
   const closeAllInProgressRef = useRef(false);
@@ -311,9 +365,10 @@ export function usePositions() {
             return;
           }
 
-          // Poll less frequently now that prices are fetched separately
-          // Poll every 30 seconds when positions exist (just for position changes)
-          // Poll every 60 seconds when no positions (just checking for new positions)
+          // Poll with reduced frequency to reduce server load
+          // Poll every 30 seconds when positions exist
+          // Poll every 60 seconds when no positions
+          // Backend caching (20s TTL) ensures fresh data without excessive RPC calls
           const pollInterval = positionData && positionData.openPositions > 0 ? 30000 : 60000;
           interval = setInterval(async () => {
             // Only fetch if we have a token and not already in progress
@@ -321,7 +376,8 @@ export function usePositions() {
               try {
                 await fetchPositions();
               } catch (err) {
-                // Silently handle errors
+                console.error('[usePositions] Polling error:', err);
+                // Don't silently fail - log for debugging
               }
             }
           }, pollInterval);
@@ -364,13 +420,31 @@ export function usePositions() {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [token]); // Only depend on token to prevent infinite loops
+  }, [token, positionData?.openPositions]); // Include positionData.openPositions to adjust polling interval
+
+  // Listen for custom events that indicate positions might have changed
+  useEffect(() => {
+    const handlePositionChange = () => {
+      console.log('[usePositions] Position change event detected, refreshing...')
+      fetchPositions(true)
+    }
+    
+    // Listen for position opened events (from trading bot or other sources)
+    window.addEventListener('position-opened', handlePositionChange)
+    window.addEventListener('position-closed', handlePositionChange)
+    
+    return () => {
+      window.removeEventListener('position-opened', handlePositionChange)
+      window.removeEventListener('position-closed', handlePositionChange)
+    }
+  }, [fetchPositions])
 
   return {
     positionData,
     isLoading,
     error,
     fetchPositions,
+    forceRefreshPositions,
     closePosition,
     closeAllPositions,
   };

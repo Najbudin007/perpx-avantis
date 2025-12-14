@@ -3,10 +3,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, HTTPException, status, Query
+from fastapi import FastAPI, HTTPException, status, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from config import settings
+from cache import cache
 
 # Import operation modules
 from trade_operations import (
@@ -146,19 +148,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add rate limiting middleware (60 requests/minute, 20 burst to handle multiple hooks)
+from rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware, requests_per_minute=60, burst=20)
 
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "avantis-trading-service",
-        "network": "base-mainnet",
-        "network_name": settings.get_network_name(),
-        "block_explorer": settings.get_block_explorer_url(),
-        "usdc_address": settings.usdc_token_address
-    }
+
+# Health check endpoint - optimized for speed (no settings access, no middleware)
+@app.get("/health", include_in_schema=False)
+async def health_check(request: Request):
+    """
+    Health check endpoint.
+    Optimized to return immediately without accessing settings or doing any I/O.
+    Excluded from schema and should bypass heavy middleware.
+    """
+    # Return immediately - no I/O, no settings access
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={"status": "healthy", "service": "avantis-trading-service"},
+        status_code=200
+    )
+
+
+# Cache stats endpoint (for monitoring)
+@app.get("/api/cache/stats")
+async def cache_stats():
+    """Get cache statistics for monitoring."""
+    try:
+        # Use asyncio.wait_for with timeout to prevent hanging
+        stats = await asyncio.wait_for(cache.get_stats_async(), timeout=1.0)
+        return {
+            "cache_stats": stats,
+            "cache_enabled": True
+        }
+    except asyncio.TimeoutError:
+        logger.warning("Cache stats timeout - returning basic stats")
+        # Return basic stats without lock (non-blocking)
+        return {
+            "cache_stats": {
+                "total_entries": len(cache._cache),
+                "pending_requests": len(cache._pending_requests),
+                "active_entries": sum(1 for entry in cache._cache.values() if not entry.is_expired()),
+                "timeout": True
+            },
+            "cache_enabled": True
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}", exc_info=True)
+        # Return basic stats on error (non-blocking)
+        return {
+            "cache_stats": {
+                "total_entries": len(cache._cache),
+                "pending_requests": len(cache._pending_requests),
+                "active_entries": sum(1 for entry in cache._cache.values() if not entry.is_expired()),
+                "error": str(e)
+            },
+            "cache_enabled": True
+        }
 
 
 # Trading operations endpoints
@@ -192,6 +237,12 @@ async def api_open_position(request: OpenPositionRequest):
             sl=request.sl,
             private_key=request.private_key
         )
+        # Invalidate positions cache for this user
+        from eth_account import Account
+        user_address = Account.from_key(request.private_key).address
+        await cache.invalidate("positions", private_key=request.private_key, address=None)
+        await cache.invalidate("positions", private_key=None, address=user_address)
+        logger.info(f"💾 [CACHE] Invalidated positions cache after opening position")
         return result
     except SymbolNotFoundError as e:
         raise HTTPException(
@@ -222,6 +273,14 @@ async def api_close_position(request: ClosePositionRequest):
             pair_index=request.pair_index,
             private_key=request.private_key
         )
+        # Invalidate positions and trade history cache for this user
+        from eth_account import Account
+        user_address = Account.from_key(request.private_key).address
+        await cache.invalidate("positions", private_key=request.private_key, address=None)
+        await cache.invalidate("positions", private_key=None, address=user_address)
+        await cache.invalidate("trade-history", private_key=request.private_key, address=None)
+        await cache.invalidate("trade-history", private_key=None, address=user_address)
+        logger.info(f"💾 [CACHE] Invalidated positions and trade history cache after closing position")
         return result
     except Exception as e:
         logger.error(f"Error in close_position: {e}", exc_info=True)
@@ -240,6 +299,14 @@ async def api_close_all_positions(request: CloseAllPositionsRequest):
         result = await close_all_positions(
             private_key=request.private_key
         )
+        # Invalidate positions and trade history cache for this user
+        from eth_account import Account
+        user_address = Account.from_key(request.private_key).address
+        await cache.invalidate("positions", private_key=request.private_key, address=None)
+        await cache.invalidate("positions", private_key=None, address=user_address)
+        await cache.invalidate("trade-history", private_key=request.private_key, address=None)
+        await cache.invalidate("trade-history", private_key=None, address=user_address)
+        logger.info(f"💾 [CACHE] Invalidated positions and trade history cache after closing all positions")
         return result
     except Exception as e:
         logger.error(f"Error in close_all_positions: {e}", exc_info=True)
@@ -262,6 +329,12 @@ async def api_update_tp_sl(request: UpdateTpSlRequest):
             new_sl=request.new_sl,
             private_key=request.private_key
         )
+        # Invalidate positions cache for this user (TP/SL changes affect position data)
+        from eth_account import Account
+        user_address = Account.from_key(request.private_key).address
+        await cache.invalidate("positions", private_key=request.private_key, address=None)
+        await cache.invalidate("positions", private_key=None, address=user_address)
+        logger.info(f"💾 [CACHE] Invalidated positions cache after updating TP/SL")
         return result
     except ValueError as e:
         raise HTTPException(
@@ -357,7 +430,18 @@ async def api_get_positions(
             derived_address = Account.from_key(private_key).address
             logger.info(f"📊 [API] Derived address from private_key: {derived_address}")
         
-        positions = await get_positions(private_key=private_key, address=address)
+        # Use cache with 20 second TTL (positions change frequently)
+        async def _fetch_positions():
+            return await get_positions(private_key=private_key, address=address)
+        
+        positions = await cache.get_or_compute(
+            "positions",
+            _fetch_positions,
+            ttl=20.0,  # Cache for 20 seconds
+            private_key=private_key,
+            address=address
+        )
+        
         logger.info(f"📊 [API] Returning {len(positions)} position(s)")
         return {"positions": positions, "count": len(positions)}
     except HTTPException:
@@ -468,6 +552,9 @@ async def api_get_trade_history(
     """
     Get trade history (closed trades) for a user.
     
+    NOTE: This endpoint is deprecated. The Next.js API route now calls Avantis API directly.
+    This is kept for backwards compatibility only.
+    
     For Base Accounts: provide address (no private key needed for read operations)
     For traditional wallets: provide private_key
     """
@@ -480,14 +567,36 @@ async def api_get_trade_history(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either private_key (traditional wallets) or address (Base Accounts) must be provided"
         )
+    
     try:
-        history = await get_trade_history(private_key=private_key, address=address, limit=limit)
+        # Use cache with 60 second TTL (trade history changes less frequently)
+        async def _fetch_history():
+            return await get_trade_history(private_key=private_key, address=address, limit=limit)
+        
+        history = await cache.get_or_compute(
+            "trade-history",
+            _fetch_history,
+            ttl=60.0,  # Cache for 60 seconds (trade history is expensive to query)
+            private_key=private_key,
+            address=address,
+            limit=limit
+        )
+        
         logger.info(f"📜 [API] Returning {len(history)} historical trade(s)")
-        return {"trades": history, "count": len(history)}
+        return {
+            "trades": history, 
+            "count": len(history),
+            "message": "Trade history fetched from Avantis API."
+        }
     except Exception as e:
         logger.error(f"Error in get_trade_history: {e}", exc_info=True)
         # Return empty history on error (don't fail the request)
-        return {"trades": [], "count": 0, "error": str(e)}
+        return {
+            "trades": [], 
+            "count": 0, 
+            "error": str(e),
+            "message": "Error fetching trade history from Avantis API."
+        }
 
 
 @app.get("/api/min-position")

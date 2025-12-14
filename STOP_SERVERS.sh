@@ -35,16 +35,16 @@ kill_by_pattern() {
     return 1
 }
 
-# Stop Avantis Service (Port 3002)
-echo -e "${YELLOW}Stopping Avantis Service (Port 3002)...${NC}"
+# Stop Avantis Service (Port 8000)
+echo -e "${YELLOW}Stopping Avantis Service (Port 8000)...${NC}"
 # Kill by port first (most reliable)
-if kill_by_port 3002; then
-    echo -e "  ${GREEN}✓ Killed process on port 3002${NC}"
+if kill_by_port 8000; then
+    echo -e "  ${GREEN}✓ Killed process on port 8000${NC}"
 fi
 sleep 0.5
 # Kill by process patterns
 kill_by_pattern "uvicorn.*main:app"
-kill_by_pattern "uvicorn.*3002"
+kill_by_pattern "uvicorn.*8000"
 kill_by_pattern "python.*uvicorn"
 kill_by_pattern "python3.*uvicorn"
 # Kill any python process running main:app
@@ -100,18 +100,18 @@ echo -e "${YELLOW}Verifying all services stopped...${NC}"
 
 # Check ports
 ports_running=0
-if lsof -ti:3002 > /dev/null 2>&1; then
-    echo -e "${RED}  ❌ Port 3002 (Avantis) still in use${NC}"
+if lsof -ti:8000 > /dev/null 2>&1; then
+    echo -e "${RED}  ❌ Port 8000 (Avantis) still in use${NC}"
     # Try one more time to kill by port
-    lsof -ti:3002 | xargs kill -9 2>/dev/null
+    lsof -ti:8000 | xargs kill -9 2>/dev/null
     sleep 1
-    if lsof -ti:3002 > /dev/null 2>&1; then
+    if lsof -ti:8000 > /dev/null 2>&1; then
         ports_running=1
     else
-        echo -e "${GREEN}  ✓ Port 3002 (Avantis) now free${NC}"
+        echo -e "${GREEN}  ✓ Port 8000 (Avantis) now free${NC}"
     fi
 else
-    echo -e "${GREEN}  ✅ Port 3002 (Avantis) is free${NC}"
+    echo -e "${GREEN}  ✅ Port 8000 (Avantis) is free${NC}"
 fi
 if lsof -ti:3001 > /dev/null 2>&1; then
     echo -e "${RED}  ❌ Port 3001 (Trading Engine) still in use${NC}"
@@ -156,7 +156,7 @@ else
     echo -e "${RED}⚠️  Some processes may still be running${NC}"
     echo -e "${YELLOW}To force kill all remaining processes, run:${NC}"
     echo "  pkill -9 -f 'uvicorn|trading-engine|ts-node|next'"
-    echo "  lsof -ti:3000,3001,3002 | xargs kill -9 2>/dev/null"
+    echo "  lsof -ti:3000,3001,8000 | xargs kill -9 2>/dev/null"
 fi
 
 echo ""

@@ -1,13 +1,17 @@
 """Position and balance query operations."""
 import asyncio
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from eth_account import Account
 from web3 import Web3
+from hexbytes import HexBytes
 from avantis_client import get_avantis_client
 from symbols import get_symbol
+from symbols.symbol_registry import PAIR_INDEX_TO_SYMBOL
 from config import settings
 from utils import retry_on_network_error
 import logging
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +180,8 @@ async def get_positions(
             account = Account.from_key(private_key)
             trader_address = account.address
         else:
+            if address is None:
+                raise ValueError("address must be provided when private_key is not provided")
             trader_address = Web3.to_checksum_address(address)
         
         # Use direct contract calls (SDK causes timeouts and is unreliable)
@@ -316,6 +322,8 @@ async def get_balance(
             account = Account.from_key(private_key)
             user_address = account.address
         else:
+            if address is None:
+                raise ValueError("address must be provided when private_key is not provided")
             user_address = Web3.to_checksum_address(address)
         
         # Get Web3 instance
@@ -433,10 +441,14 @@ async def get_usdc_allowance(
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
         # Get USDC contract - defaults to TradingCallbacks (spender), but can be overridden.
-        usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender = Web3.to_checksum_address(
-            spender_address or settings.avantis_usdc_spender_address
-        )
+        usdc_addr = settings.usdc_token_address
+        if usdc_addr is None:
+            raise ValueError("usdc_token_address must be configured in settings")
+        usdc_address = Web3.to_checksum_address(usdc_addr)
+        spender_addr = spender_address or settings.avantis_usdc_spender_address
+        if spender_addr is None:
+            raise ValueError("spender_address must be provided or configured in settings")
+        spender = Web3.to_checksum_address(spender_addr)
         
         logger.debug(f"Checking USDC allowance for spender: {spender}")
         
@@ -500,10 +512,14 @@ async def approve_usdc(
             raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
         
         # Get USDC contract - defaults to TradingCallbacks (spender), but can be overridden.
-        usdc_address = Web3.to_checksum_address(settings.usdc_token_address)
-        spender = Web3.to_checksum_address(
-            spender_address or settings.avantis_usdc_spender_address
-        )
+        usdc_addr = settings.usdc_token_address
+        if usdc_addr is None:
+            raise ValueError("usdc_token_address must be configured in settings")
+        usdc_address = Web3.to_checksum_address(usdc_addr)
+        spender_addr = spender_address or settings.avantis_usdc_spender_address
+        if spender_addr is None:
+            raise ValueError("spender_address must be provided or configured in settings")
+        spender = Web3.to_checksum_address(spender_addr)
         
         logger.info(f"🔐 Approving USDC for spender: {spender}")
         
@@ -561,18 +577,17 @@ async def approve_usdc(
         
         # Wait for transaction confirmation (critical - position opening needs confirmed approval)
         logger.info(f"⏳ Waiting for USDC approval transaction confirmation...")
-        import asyncio
         receipt = await asyncio.to_thread(
             w3.eth.wait_for_transaction_receipt,
-            tx_hash_hex,
+            HexBytes(tx_hash_hex),
             timeout=60  # 60 second timeout
         )
         
-        if receipt.status == 1:
-            logger.info(f"✅ USDC approval transaction confirmed in block {receipt.blockNumber}")
+        if receipt["status"] == 1:
+            logger.info(f"✅ USDC approval transaction confirmed in block {receipt['blockNumber']}")
         else:
-            logger.error(f"❌ USDC approval transaction failed (status: {receipt.status})")
-            raise ValueError(f"USDC approval transaction failed: {receipt.status}")
+            logger.error(f"❌ USDC approval transaction failed (status: {receipt['status']})")
+            raise ValueError(f"USDC approval transaction failed: {receipt['status']}")
         
         return {
             "success": True,
@@ -594,10 +609,11 @@ async def get_trade_history(
     limit: int = 50
 ) -> List[Dict[str, Any]]:
     """
-    Get trade history (closed trades) for a user.
+    Get trade history (closed trades) for a user using Avantis backend API.
     
-    Fetches all historical trades from the Avantis SDK and combines with current open positions
-    to build a complete trade history.
+    This function fetches trade history from the Avantis API endpoint which provides
+    the same normalized data used by the Avantis dashboard. This is the single source
+    of truth for trade history.
     
     Args:
         private_key: User's private key (for traditional wallets)
@@ -605,7 +621,7 @@ async def get_trade_history(
         limit: Maximum number of trades to return
         
     Returns:
-        List of historical trade dictionaries with full details
+        List of historical trade dictionaries with full details matching Avantis dashboard format
     """
     if not private_key and not address:
         raise ValueError("Either private_key or address must be provided")
@@ -616,160 +632,275 @@ async def get_trade_history(
             account = Account.from_key(private_key)
             trader_address = account.address
         else:
+            if address is None:
+                raise ValueError("address must be provided when private_key is not provided")
             trader_address = Web3.to_checksum_address(address)
         
-        logger.info(f"📜 [HISTORY] Fetching trade history for: {trader_address}")
+        logger.info(f"📜 [HISTORY] Fetching trade history from Avantis API for: {trader_address}")
         
-        if not SDK_AVAILABLE:
-            logger.warning("📜 [HISTORY] SDK not available, returning empty history")
-            return []
+        # Avantis API endpoint
+        # NOTE: To verify the correct endpoint format, check browser network requests
+        # when viewing trade history on https://www.avantisfi.com
+        # Look for requests to api.avantisfi.com in the Network tab
+        api_base_url = "https://api.avantisfi.com"
+        all_trades = []
+        page = 1
         
-        # Get RPC URL
-        rpc_url = settings.get_effective_rpc_url()
+        # Headers to match browser requests
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.avantisfi.com",
+            "Origin": "https://www.avantisfi.com",
+            "Accept": "application/json",
+        }
         
-        # Initialize SDK clients (FeedClient uses default Pyth network endpoint)
-        feed_client = FeedClient()
-        trader_client = TraderClient(rpc_url=rpc_url, feed_client=feed_client)
+        # Try multiple address formats (some APIs are picky about format)
+        address_variants = [
+            trader_address,  # Checksummed (0x...)
+            trader_address.lower(),  # Lowercase (0x...)
+            trader_address.replace("0x", ""),  # Without 0x prefix
+            trader_address.lower().replace("0x", ""),  # Lowercase without 0x
+        ]
         
-        # Fetch current open trades (these will help us track what was closed)
-        try:
-            long_trades, short_trades = await asyncio.wait_for(
-                asyncio.to_thread(trader_client.trade.get_trades, trader_address),
-                timeout=20.0
-            )
-            open_trades_count = len(long_trades) + len(short_trades)
-            logger.info(f"📜 [HISTORY] Found {open_trades_count} open positions")
-        except Exception as e:
-            logger.warning(f"📜 [HISTORY] Error fetching open trades: {e}")
-            long_trades, short_trades = [], []
-        
-        # For trade history, we need to query blockchain events for closed positions
-        # Since the SDK doesn't have a direct "get closed trades" method, 
-        # we'll query the contract events directly
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        if not w3.is_connected():
-            raise RuntimeError(f"Web3 provider not reachable: {rpc_url}")
-        
-        # Get TradingCallbacks contract for events
-        callbacks_address = Web3.to_checksum_address(settings.avantis_usdc_spender_address)
-        
-        # Query recent blocks (last 7 days on Base)
-        current_block = w3.eth.block_number
-        from_block = max(0, current_block - 300000)  # ~7 days on Base (2s per block)
-        
-        logger.info(f"📜 [HISTORY] Querying events from block {from_block} to {current_block}")
-        
-        # Define event signatures for trade lifecycle
-        # MarketExecuted: keccak256("MarketExecuted(address,uint256,uint8,uint256,bool,uint256,uint256,int256,uint256)")
-        # This is the event emitted when a trade is closed via market order
-        market_executed_topic = "0x5e6d3e07c1b8e02e5b7e8c6f7a9d3b5a4c8f9e0d1a2b3c4d5e6f7a8b9c0d1e2f"
-        
-        history = []
-        
-        try:
-            # Query in chunks to avoid RPC limits
-            chunk_size = 50000
-            
-            for start in range(from_block, current_block + 1, chunk_size):
-                end = min(start + chunk_size - 1, current_block)
+        async with aiohttp.ClientSession() as session:
+            for address_variant in address_variants:
+                page = 1
+                logger.info(f"📜 [HISTORY] Trying address format: {address_variant}")
                 
-                try:
-                    # Get all logs from TradingCallbacks contract
-                    logs = await asyncio.to_thread(
-                        w3.eth.get_logs,
-                        {
-                            "address": callbacks_address,
-                            "fromBlock": start,
-                            "toBlock": end,
-                        }
-                    )
+                while True:
+                    # Construct API URL with wallet address and page number
+                    api_url = f"{api_base_url}/v2/history/portfolio/history/{address_variant}/{page}"
                     
-                    logger.info(f"📜 [HISTORY] Processing {len(logs)} logs from blocks {start}-{end}")
-                    
-                    # Process each log
-                    for log in logs:
-                        try:
-                            topics = log.get("topics", [])
-                            if len(topics) < 2:
-                                continue
+                    try:
+                        logger.info(f"📜 [HISTORY] Fetching page {page} from {api_url}")
+                        
+                        async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                            response_text = await response.text()
                             
-                            # Extract trader address from indexed parameter (topic[1])
-                            # Topics are 32 bytes, address is last 20 bytes
-                            indexed_address_bytes = topics[1][-20:] if len(topics[1]) > 20 else topics[1]
-                            indexed_address = "0x" + indexed_address_bytes.hex()
+                            if response.status == 404:
+                                # No more pages or no trades
+                                logger.info(f"📜 [HISTORY] Page {page} returned 404, no more trades")
+                                if page == 1:
+                                    # If first page is 404, try next address variant
+                                    logger.info(f"📜 [HISTORY] First page 404, will try next address format")
+                                    break
+                                else:
+                                    # We got some pages, this is the end
+                                    break
                             
-                            # Check if this log is for our trader
-                            if indexed_address.lower() != trader_address.lower():
-                                continue
+                            if response.status != 200:
+                                logger.warning(f"📜 [HISTORY] API returned status {response.status}: {response_text[:500]}")
+                                if response.status >= 500:
+                                    # Server error, retry might help
+                                    raise Exception(f"Avantis API server error: {response.status} - {response_text[:200]}")
+                                if page == 1:
+                                    # If first page failed, try next address variant
+                                    break
+                                else:
+                                    # We got some pages, stop here
+                                    break
                             
-                            # This is a trade event for our trader
-                            tx_hash = log.get("transactionHash")
-                            tx_hash_hex = tx_hash.hex() if isinstance(tx_hash, bytes) else str(tx_hash)
-                            block_number = log.get("blockNumber", 0)
-                            log_index = log.get("logIndex", 0)
-                            
-                            # Get block timestamp
+                            # Try to parse JSON
                             try:
-                                block = await asyncio.to_thread(w3.eth.get_block, block_number)
-                                timestamp = block.get("timestamp", 0)
-                            except:
-                                timestamp = 0
+                                data = await response.json() if response_text else {}
+                            except Exception as json_err:
+                                logger.error(f"📜 [HISTORY] Failed to parse JSON response: {json_err}")
+                                logger.error(f"📜 [HISTORY] Response text: {response_text[:500]}")
+                                if page == 1:
+                                    break
+                                else:
+                                    break
                             
-                            # Try to decode event data (if available)
-                            data = log.get("data", "0x")
+                            # Log the response structure for debugging
+                            if page == 1:
+                                logger.info(f"📜 [HISTORY] First page response structure: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A (not a dict)'}")
+                                logger.debug(f"📜 [HISTORY] First page response sample: {str(data)[:500]}")
+                        
+                            # Extract trades from response
+                            # API response structure: {"portfolio": [...], "count": N, "pageCount": M, "success": true}
+                            trades = []
+                            if isinstance(data, list):
+                                trades = data
+                            elif isinstance(data, dict):
+                                # Avantis API uses "portfolio" key
+                                if "portfolio" in data:
+                                    trades = data["portfolio"]
+                                    logger.debug(f"📜 [HISTORY] Found {len(trades)} trades in 'portfolio' key")
+                                elif "trades" in data:
+                                    trades = data["trades"]
+                                elif "data" in data:
+                                    trades = data["data"]
+                                elif "history" in data:
+                                    trades = data["history"]
+                                elif "items" in data:
+                                    trades = data["items"]
+                                elif "results" in data:
+                                    trades = data["results"]
+                                else:
+                                    # Check if dict values are arrays
+                                    for key, value in data.items():
+                                        if isinstance(value, list):
+                                            trades = value
+                                            logger.info(f"📜 [HISTORY] Found trades array in key: {key}")
+                                            break
                             
-                            # Parse data fields (simplified - actual ABI decoding would be more complex)
-                            # For now, create a basic trade record
-                            from datetime import datetime
-                            trade_date = datetime.fromtimestamp(timestamp).strftime('%m/%d/%Y') if timestamp > 0 else ""
+                            if not trades:
+                                logger.info(f"📜 [HISTORY] Page {page} returned no trades (data type: {type(data)})")
+                                if page == 1 and not all_trades:
+                                    # If first page has no trades, try next address variant
+                                    break
+                                else:
+                                    # We got some pages, this is the end
+                                    break
                             
-                            # Extract pair_index from topics if available (usually topic[2])
-                            pair_index = 0
-                            if len(topics) >= 3:
-                                try:
-                                    pair_index = int.from_bytes(topics[2], byteorder='big')
-                                except:
-                                    pass
+                            logger.info(f"📜 [HISTORY] Page {page}: Found {len(trades)} trades")
+                            all_trades.extend(trades)
                             
-                            # Map pair_index to symbol
-                            from symbols.symbol_registry import PAIR_INDEX_TO_SYMBOL
-                            symbol = PAIR_INDEX_TO_SYMBOL.get(pair_index, f"PAIR-{pair_index}")
+                            # Check if there are more pages
+                            # API response includes "pageCount" field
+                            page_count = None
+                            if isinstance(data, dict):
+                                page_count = data.get("pageCount") or data.get("totalPages") or data.get("pages") or data.get("total_pages")
+                                if page_count is not None:
+                                    logger.debug(f"📜 [HISTORY] API reports {page_count} total pages")
                             
-                            history.append({
-                                "id": f"{tx_hash_hex}-{log_index}",
-                                "symbol": symbol,
-                                "pair_index": pair_index,
-                                "side": "CLOSED",  # These are all closed trades
-                                "timestamp": timestamp,
-                                "date": trade_date,
-                                "tx_hash": tx_hash_hex,
-                                "block": block_number,
-                                "trader": trader_address,
-                                "type": "close",
-                            })
+                            if page_count is not None:
+                                if page >= page_count:
+                                    logger.info(f"📜 [HISTORY] Reached last page ({page_count})")
+                                    break
+                            elif len(trades) == 0:
+                                # No trades on this page, assume we're done
+                                break
                             
-                        except Exception as e:
-                            logger.debug(f"📜 [HISTORY] Error processing log: {e}")
-                            continue
+                            # Rate limit: wait 300ms between requests
+                            await asyncio.sleep(0.3)
+                            page += 1
+                            
+                    except aiohttp.ClientError as e:
+                        logger.error(f"📜 [HISTORY] Network error fetching page {page}: {e}")
+                        if page == 1:
+                            # Try next address variant
+                            break
+                        raise
+                    except Exception as e:
+                        logger.error(f"📜 [HISTORY] Error fetching page {page}: {e}", exc_info=True)
+                        if page == 1:
+                            # Try next address variant
+                            break
+                        # If we have some trades, return what we have
+                        if all_trades:
+                            logger.warning(f"📜 [HISTORY] Returning {len(all_trades)} trades despite error")
+                            break
+                        raise
                 
-                except Exception as chunk_error:
-                    logger.warning(f"📜 [HISTORY] Error querying chunk {start}-{end}: {chunk_error}")
-                    continue
-                
-                # Small delay to avoid rate limits
-                await asyncio.sleep(0.05)
-            
-            logger.info(f"📜 [HISTORY] Found {len(history)} historical trades for {trader_address}")
-            
-            # Sort by timestamp descending (most recent first)
-            history.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-            
-            # Return limited results
-            return history[:limit]
-            
-        except Exception as e:
-            logger.warning(f"📜 [HISTORY] Error querying blockchain events: {e}")
+                # If we got trades with this address variant, stop trying others
+                if all_trades:
+                    logger.info(f"📜 [HISTORY] Successfully fetched trades using address format: {address_variant}")
+                    break
+        
+        if not all_trades:
+            logger.warning(f"📜 [HISTORY] No trades found from API for address {trader_address}. Tried {len(address_variants)} address format(s).")
+            logger.warning(f"📜 [HISTORY] This could mean: 1) No trades exist for this wallet, 2) API endpoint/format is incorrect, 3) API requires authentication")
             return []
+        
+        logger.info(f"📜 [HISTORY] Fetched {len(all_trades)} total trades from API")
+        
+        # Normalize trades to match expected format
+        # API structure: portfolio[].event.args.t (trade data), portfolio[].event.args.price (close price), portfolio[]._grossPnl (PnL)
+        normalized_trades = []
+        for trade_item in all_trades:
+            try:
+                # Extract nested structure from API response
+                event = trade_item.get("event", {})
+                args = event.get("args", {})
+                trade_data = args.get("t", {})  # Trade struct
+                
+                # Get values directly from API (already in decimal format, no conversion needed)
+                is_long = trade_data.get("buy", False)
+                pair_index = trade_data.get("pairIndex")
+                leverage = trade_data.get("leverage", 1)
+                collateral = trade_data.get("initialPosToken", 0)  # Already in USDC (decimal)
+                open_price = trade_data.get("openPrice", 0)  # Already in decimal
+                close_price = args.get("price", 0)  # Close price from event.args
+                tp = trade_data.get("tp", 0) if trade_data.get("tp", 0) > 0 else None
+                sl = trade_data.get("sl", 0) if trade_data.get("sl", 0) > 0 else None
+                position_size_usdc = args.get("positionSizeUSDC", 0)  # Already in USDC (decimal)
+                
+                # PnL is at top level of trade_item
+                pnl = trade_item.get("_grossPnl", 0)
+                
+                # Timestamp - API provides timeStamp (ISO string) at top level, or timestamp (unix) in trade_data
+                time_stamp_str = trade_item.get("timeStamp")  # ISO string like "2025-12-12T16:03:41.000Z"
+                time_stamp_unix = trade_data.get("timestamp", 0)  # Unix timestamp
+                
+                # Prefer ISO string, convert to unix timestamp
+                if time_stamp_str:
+                    try:
+                        dt = datetime.fromisoformat(time_stamp_str.replace("Z", "+00:00"))
+                        timestamp = int(dt.timestamp())
+                    except Exception as e:
+                        logger.debug(f"📜 [HISTORY] Failed to parse ISO timestamp {time_stamp_str}: {e}, using unix timestamp")
+                        timestamp = time_stamp_unix if time_stamp_unix > 0 else int(datetime.now().timestamp())
+                elif time_stamp_unix > 0:
+                    timestamp = time_stamp_unix
+                else:
+                    # Fallback: use current time if no timestamp
+                    timestamp = int(datetime.now().timestamp())
+                
+                # Format date from timestamp
+                if timestamp:
+                    trade_date = datetime.fromtimestamp(timestamp).strftime('%m/%d/%Y')
+                else:
+                    trade_date = ""
+                
+                # Get symbol from pair_index
+                symbol = PAIR_INDEX_TO_SYMBOL.get(pair_index, f"PAIR-{pair_index}") if pair_index is not None else "UNKNOWN"
+                
+                # Calculate position_size_asset
+                position_size_asset = position_size_usdc / close_price if close_price > 0 else 0
+                
+                # Calculate pnl_percentage
+                pnl_percentage = (pnl / collateral * 100) if collateral > 0 else 0
+                
+                # Build normalized trade record
+                normalized_trade = {
+                    "id": trade_item.get("_id") or f"trade-{len(normalized_trades)}",
+                    "symbol": symbol,
+                    "pair_index": pair_index,
+                    "is_long": is_long,
+                    "side": "Long" if is_long else "Short",
+                    "leverage": leverage,
+                    "collateral": collateral,
+                    "position_size_usdc": position_size_usdc,
+                    "position_size_asset": position_size_asset,
+                    "open_price": open_price,
+                    "close_price": close_price,
+                    "tp": tp,
+                    "sl": sl,
+                    "pnl": pnl,  # Use _grossPnl directly from API
+                    "pnl_percentage": pnl_percentage,
+                    "timestamp": timestamp,
+                    "open_timestamp": trade_data.get("timestamp", timestamp),
+                    "date": trade_date,
+                    "trader": trade_data.get("trader") or trader_address,
+                    "type": "close",
+                    "tx_hash": "",  # Not provided by API
+                    "block": 0,  # Not provided by API
+                }
+                
+                normalized_trades.append(normalized_trade)
+                
+            except Exception as e:
+                logger.warning(f"📜 [HISTORY] Error normalizing trade: {e}", exc_info=True)
+                continue
+        
+        logger.info(f"📜 [HISTORY] Normalized {len(normalized_trades)} trades")
+        
+        # Sort by timestamp descending (most recent first)
+        normalized_trades.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        
+        # Return limited results
+        return normalized_trades[:limit]
         
     except Exception as e:
         logger.error(f"❌ Error getting trade history: {e}", exc_info=True)

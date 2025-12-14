@@ -10,7 +10,7 @@ const { ethers } = require('ethers');
 const RECIPIENT_ADDRESS = '0x1f4Ef1eD23E38dAA2BD1451D4CEF219C93B2016F'; // Actual recipient from transaction
 const RPC_URL = 'https://mainnet.base.org';
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // Base mainnet USDC
-const AVANTIS_API_URL = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:3002';
+const AVANTIS_API_URL = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_API_URL || 'http://localhost:8000';
 
 // USDC ABI
 const USDC_ABI = [

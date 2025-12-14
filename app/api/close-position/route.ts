@@ -56,12 +56,18 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.fid
       const farcasterWalletService = getFarcasterWalletService()
-      // Use ensureTradingWallet() for consistency with trading/start route
-      // This ensures wallet exists and has valid private key
-      const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+      // CRITICAL: Use getWalletWithKey() first to get existing wallet, only create if missing
+      // This ensures we always use the SAME wallet address (prevents inconsistency)
+      let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
       
       if (!farcasterWallet || !farcasterWallet.privateKey) {
-        console.error(`[ClosePosition] Failed to get trading wallet for FID ${authContext.fid}`)
+        // Wallet doesn't exist or has no private key - create it (only for first-time users)
+        console.log(`[ClosePosition] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
+        farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+      }
+      
+      if (!farcasterWallet || !farcasterWallet.privateKey) {
+        console.error(`[ClosePosition] Failed to get/create trading wallet for FID ${authContext.fid}`)
         return NextResponse.json({ 
           error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
@@ -83,18 +89,26 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.webUserId
       const webWalletService = getWebWalletService()
-      const webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      // CRITICAL: Get existing wallet first to ensure consistency (same pattern as Farcaster)
+      let webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      
+      if (!webWallet) {
+        // Wallet doesn't exist - create it (only for first-time users)
+        console.log(`[ClosePosition] ⚠️ No existing trading wallet found for web user ${authContext.webUserId}, creating one...`)
+        webWallet = await webWalletService.ensureTradingWallet(authContext.webUserId)
+      }
       
       if (!webWallet) {
         return NextResponse.json({ 
-          error: 'No wallet found' 
+          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
       
       const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
       if (!privateKey) {
+        console.error(`[ClosePosition] Failed to get private key for web user ${authContext.webUserId}`)
         return NextResponse.json({ 
-          error: 'Wallet private key not available' 
+          error: 'Wallet private key not available. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
       
@@ -102,6 +116,7 @@ export async function POST(request: NextRequest) {
         address: webWallet.address,
         privateKey: privateKey
       }
+      console.log(`[ClosePosition] Using trading wallet: ${wallet.address} for web user: ${authContext.webUserId}`)
     }
 
     if (!wallet || !wallet.privateKey) {
@@ -128,6 +143,8 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[ClosePosition] Closing position with pair_index ${pairIndex} for ${authContext.context} user:`, userId)
+    console.log(`[ClosePosition] Wallet address: ${wallet.address}`)
+    console.log(`[ClosePosition] Private key available: ${wallet.privateKey ? `${wallet.privateKey.slice(0, 10)}...${wallet.privateKey.slice(-4)}` : 'MISSING'}`)
 
     // Use AvantisClient to call backend FastAPI directly (direct contract integration)
     const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:8000'
@@ -137,6 +154,7 @@ export async function POST(request: NextRequest) {
     })
     
     try {
+      // Pass private key explicitly to ensure it's used (even though it's in the client config)
       const result = await avantisClient.closePosition(pairIndex, wallet.privateKey)
       
       console.log(`[ClosePosition] Successfully closed position for pair_index ${pairIndex}`)
@@ -149,14 +167,18 @@ export async function POST(request: NextRequest) {
       console.error(`[ClosePosition] Failed to close position for pair_index ${pairIndex}:`, error)
       const errorMessage = error instanceof Error ? error.message : 'Failed to close position'
       
-      // Provide more detailed error message for Farcaster users
+      // Provide more detailed error message for all users (especially Farcaster)
       let userFriendlyError = errorMessage
-      if (errorMessage.includes('No trading wallet')) {
-        userFriendlyError = 'Trading wallet not found. Please restart your trading session.'
-      } else if (errorMessage.includes('No open trade found')) {
+      if (errorMessage.includes('No trading wallet') || errorMessage.includes('No wallet found')) {
+        userFriendlyError = 'Trading wallet not found. Please restart your trading session or ensure your wallet is set up.'
+      } else if (errorMessage.includes('No open trade found') || errorMessage.includes('No open position')) {
         userFriendlyError = 'Position not found. It may have already been closed.'
-      } else if (errorMessage.includes('execution reverted')) {
+      } else if (errorMessage.includes('execution reverted') || errorMessage.includes('revert')) {
         userFriendlyError = 'Transaction failed on blockchain. Please try again.'
+      } else if (errorMessage.includes('private key') || errorMessage.includes('Private key')) {
+        userFriendlyError = 'Wallet authentication failed. Please ensure your trading wallet is properly set up.'
+      } else if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+        userFriendlyError = 'Authentication failed. Please refresh your session and try again.'
       }
       
       return NextResponse.json({

@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
       }
     }
     
-    if (!wallet || !wallet.privateKey) {
+    if (!wallet || !wallet.address) {
       return NextResponse.json({
         trades: [],
         count: 0,
@@ -72,88 +72,170 @@ export async function GET(request: NextRequest) {
       })
     }
     
-
-    // Get trade history from Avantis service (port 8000)
-    // Use NEXT_PUBLIC_AVANTIS_API_URL to match other API routes
-    const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || process.env.AVANTIS_SERVICE_URL || 'http://localhost:8000'
+    // Call Avantis API directly
+    const avantisApiUrl = "https://api.avantisfi.com"
+    const walletAddress = wallet.address
+    const allTrades: any[] = []
+    let page = 1
     
-    console.log(`[API] Trade history - Fetching from: ${avantisApiUrl}/api/trade-history`)
-    console.log(`[API] Trade history - Wallet address: ${wallet.address.slice(0, 10)}...${wallet.address.slice(-6)}`)
+    console.log(`[API] Trade history - Fetching from Avantis API for wallet: ${walletAddress.slice(0, 10)}...${walletAddress.slice(-6)}`)
     
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30000)
+      // Headers to match browser requests
+      const headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.avantisfi.com",
+        "Origin": "https://www.avantisfi.com",
+        "Accept": "application/json",
+      }
       
-      // Build query params - include both private_key and address for Base Accounts support
-      const params = new URLSearchParams({
-        private_key: wallet.privateKey,
-        address: wallet.address,
-        limit: '50'
-      })
-      
-      const url = `${avantisApiUrl}/api/trade-history?${params.toString()}`
-      console.log(`[API] Trade history - Request URL: ${url.replace(/private_key=[^&]+/, 'private_key=***')}`)
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-      })
-      
-      clearTimeout(timeoutId)
-      
-      if (response.ok) {
+      // Fetch all pages
+      while (true) {
+        const url = `${avantisApiUrl}/v2/history/portfolio/history/${walletAddress}/${page}`
+        
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 30000)
+        
+        const response = await fetch(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+        })
+        
+        clearTimeout(timeoutId)
+        
+        if (response.status === 404) {
+          // No more pages
+          break
+        }
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'Unknown error')
+          console.error(`[API] Trade history error (${response.status}): ${errorText}`)
+          if (page === 1) {
+            // If first page fails, return error
+            return NextResponse.json({
+              trades: [],
+              count: 0,
+              error: `Failed to fetch trade history: ${errorText}`
+            })
+          }
+          break
+        }
+        
         const data = await response.json()
-        console.log(`[API] Trade history - Success: ${data.count || 0} trades found`)
-        return NextResponse.json({
-          trades: data.trades || [],
-          count: data.count || 0
-        })
-      } else {
-        const errorText = await response.text().catch(() => 'Unknown error')
-        let errorMessage = errorText
         
-        // Try to parse JSON error if possible
-        try {
-          const errorJson = JSON.parse(errorText)
-          errorMessage = errorJson.detail || errorJson.error || errorJson.message || errorText
-        } catch {
-          // Not JSON, use as-is
+        // Extract trades from portfolio array
+        const trades = data.portfolio || []
+        if (trades.length === 0) {
+          break
         }
         
-        console.error(`[API] Trade history error (${response.status}): ${errorMessage}`)
-        return NextResponse.json({
-          trades: [],
-          count: 0,
-          error: errorMessage || `HTTP ${response.status}: ${response.statusText}`
-        })
+        allTrades.push(...trades)
+        
+        // Check if there are more pages
+        const pageCount = data.pageCount
+        if (pageCount && page >= pageCount) {
+          break
+        }
+        
+        // Rate limit: wait 300ms between requests
+        await new Promise(resolve => setTimeout(resolve, 300))
+        page++
       }
-    } catch (fetchError) {
-      const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError)
-      console.error('[API] Trade history fetch error:', {
-        error: errorMessage,
-        avantisApiUrl,
-        walletAddress: wallet.address,
-        isAbortError: fetchError instanceof Error && fetchError.name === 'AbortError'
+      
+      // Normalize trades to match frontend format
+      const normalizedTrades = allTrades.map((tradeItem: any) => {
+        const event = tradeItem.event || {}
+        const args = event.args || {}
+        const tradeData = args.t || {}
+        
+        const isLong = tradeData.buy || false
+        const pairIndex = tradeData.pairIndex
+        const leverage = tradeData.leverage || 1
+        const collateral = tradeData.initialPosToken || 0
+        const openPrice = tradeData.openPrice || 0
+        const closePrice = args.price || 0
+        const tp = tradeData.tp > 0 ? tradeData.tp : null
+        const sl = tradeData.sl > 0 ? tradeData.sl : null
+        const positionSizeUsdc = args.positionSizeUSDC || 0
+        const pnl = tradeItem._grossPnl || 0
+        
+        // Handle timestamp
+        let timestamp = 0
+        if (tradeItem.timeStamp) {
+          try {
+            timestamp = Math.floor(new Date(tradeItem.timeStamp).getTime() / 1000)
+          } catch {
+            timestamp = tradeData.timestamp || 0
+          }
+        } else {
+          timestamp = tradeData.timestamp || 0
+        }
+        
+        // Get symbol from pair_index
+        // Note: Based on API response, pairIndex 0 = ETH, pairIndex 1 = BTC
+        const symbolMap: Record<number, string> = {
+          0: "ETH",
+          1: "BTC",
+          2: "SOL",
+          3: "AVAX",
+          4: "MATIC",
+          5: "ARB",
+          6: "OP",
+          7: "LINK",
+          8: "UNI",
+          9: "AAVE",
+          10: "ATOM",
+          11: "DOT",
+          12: "ADA",
+          13: "XRP",
+          14: "DOGE",
+          15: "BNB",
+        }
+        const symbol = symbolMap[pairIndex] || `PAIR-${pairIndex}`
+        
+        // Format date
+        const date = timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : ""
+        
+        return {
+          id: tradeItem._id || `trade-${tradeItem._id}`,
+          symbol,
+          pair_index: pairIndex,
+          is_long: isLong,
+          side: isLong ? "Long" : "Short",
+          leverage,
+          collateral,
+          position_size_usdc: positionSizeUsdc,
+          position_size_asset: closePrice > 0 ? positionSizeUsdc / closePrice : 0,
+          open_price: openPrice,
+          close_price: closePrice,
+          tp,
+          sl,
+          pnl,
+          pnl_percentage: collateral > 0 ? (pnl / collateral) * 100 : 0,
+          timestamp,
+          open_timestamp: tradeData.timestamp || timestamp,
+          date,
+          trader: tradeData.trader || walletAddress,
+          type: "close",
+          tx_hash: "",
+          block: 0,
+        }
       })
       
-      // Provide more specific error messages
-      if (fetchError instanceof Error) {
-        if (fetchError.name === 'AbortError') {
-          return NextResponse.json({
-            trades: [],
-            count: 0,
-            error: 'Request timeout: Avantis service did not respond in time'
-          })
-        }
-        if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
-          return NextResponse.json({
-            trades: [],
-            count: 0,
-            error: `Cannot connect to Avantis service at ${avantisApiUrl}. Please ensure the service is running.`
-          })
-        }
-      }
+      // Sort by timestamp descending (most recent first)
+      normalizedTrades.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+      
+      console.log(`[API] Trade history - Success: ${normalizedTrades.length} trades found`)
+      return NextResponse.json({
+        trades: normalizedTrades,
+        count: normalizedTrades.length
+      })
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      console.error('[API] Trade history fetch error:', errorMessage)
       
       return NextResponse.json({
         trades: [],

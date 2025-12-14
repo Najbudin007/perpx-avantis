@@ -32,16 +32,24 @@ export async function POST(request: NextRequest) {
       }
       
       const farcasterWalletService = getFarcasterWalletService()
-      // Use ensureTradingWallet() for consistency with trading/start route
-      const farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+      // CRITICAL: Use getWalletWithKey() first to get existing wallet, only create if missing
+      // This ensures we always use the SAME wallet address (prevents inconsistency)
+      let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+      
+      if (!farcasterWallet || !farcasterWallet.privateKey) {
+        // Wallet doesn't exist or has no private key - create it (only for first-time users)
+        console.log(`[UpdateTP/SL] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
+        farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+      }
+      
       if (farcasterWallet && farcasterWallet.privateKey) {
         wallet = {
           address: farcasterWallet.address,
           privateKey: farcasterWallet.privateKey
         }
-        console.log(`[UpdateTP/SL] Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
+        console.log(`[UpdateTP/SL] ✅ Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
       } else {
-        console.error(`[UpdateTP/SL] Failed to get trading wallet for FID ${authContext.fid}`)
+        console.error(`[UpdateTP/SL] Failed to get/create trading wallet for FID ${authContext.fid}`)
       }
     } else {
       // Web user
@@ -50,7 +58,15 @@ export async function POST(request: NextRequest) {
       }
       
       const webWalletService = getWebWalletService()
-      const webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      // CRITICAL: Get existing wallet first to ensure consistency (same pattern as Farcaster)
+      let webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      
+      if (!webWallet) {
+        // Wallet doesn't exist - create it (only for first-time users)
+        console.log(`[UpdateTP/SL] ⚠️ No existing trading wallet found for web user ${authContext.webUserId}, creating one...`)
+        webWallet = await webWalletService.ensureTradingWallet(authContext.webUserId)
+      }
+      
       if (webWallet) {
         const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
         if (privateKey) {
@@ -58,7 +74,12 @@ export async function POST(request: NextRequest) {
             address: webWallet.address,
             privateKey: privateKey
           }
+          console.log(`[UpdateTP/SL] ✅ Using trading wallet: ${wallet.address} for web user: ${authContext.webUserId}`)
+        } else {
+          console.error(`[UpdateTP/SL] Failed to get private key for web user ${authContext.webUserId}`)
         }
+      } else {
+        console.error(`[UpdateTP/SL] Failed to get/create trading wallet for web user ${authContext.webUserId}`)
       }
     }
     
@@ -97,12 +118,16 @@ export async function POST(request: NextRequest) {
       const errorData = await avantisResponse.json().catch(() => ({ detail: 'Failed to update TP/SL' }))
       console.error('[API] Avantis error:', errorData)
       
-      // Provide more detailed error message for Farcaster users
+      // Provide more detailed error message for all users (especially Farcaster)
       let userFriendlyError = errorData.detail || 'Failed to update TP/SL'
-      if (userFriendlyError.includes('No open trade found')) {
+      if (userFriendlyError.includes('No open trade found') || userFriendlyError.includes('No open position')) {
         userFriendlyError = 'Position not found. It may have been closed.'
-      } else if (userFriendlyError.includes('execution reverted')) {
+      } else if (userFriendlyError.includes('execution reverted') || userFriendlyError.includes('revert')) {
         userFriendlyError = 'Transaction failed on blockchain. Please try again.'
+      } else if (userFriendlyError.includes('private key') || userFriendlyError.includes('Private key')) {
+        userFriendlyError = 'Wallet authentication failed. Please ensure your trading wallet is properly set up.'
+      } else if (userFriendlyError.includes('401') || userFriendlyError.includes('Unauthorized')) {
+        userFriendlyError = 'Authentication failed. Please refresh your session and try again.'
       }
       
       return NextResponse.json(

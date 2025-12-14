@@ -406,6 +406,14 @@ export function useTradingSession() {
       payFeeOnPositionOpen(tradingAmount, feePending);
     }
     
+    // Dispatch event when position count increases (position opened)
+    if (currentPositions > previousPositions) {
+      console.log(`[useTradingSession] Position opened! Dispatching position-opened event (${previousPositions} -> ${currentPositions})`)
+      window.dispatchEvent(new CustomEvent('position-opened', {
+        detail: { count: currentPositions, previousCount: previousPositions }
+      }))
+    }
+    
     // Update previous position count
     previousPositionCountRef.current = currentPositions;
     
@@ -425,7 +433,7 @@ export function useTradingSession() {
             // Silently handle errors - don't log to prevent console spam
             // Session state will be preserved to prevent flickering
           });
-        }, 15000); // Refresh every 15 seconds (less frequent to reduce flickering)
+        }, 30000); // Refresh every 30 seconds (reduced to minimize server load)
 
         return () => clearInterval(interval);
       }, [tradingSession?.id, tradingSession?.status, refreshSessionStatus]); // Include refreshSessionStatus but it's now stable

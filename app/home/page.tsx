@@ -255,7 +255,7 @@ const TradingCard = ({
   }, onProgress?: (step: string, message: string) => void) => Promise<string>
 }) => {
   const [isTrading, setIsTrading] = useState(false)
-  const { positionData, isLoading: positionsLoading } = usePositions()
+  const { positionData } = usePositions() // Removed positionsLoading - it shouldn't block button
   const [depositAsset, setDepositAsset] = useState<'USDC' | 'ETH'>('USDC')
   const [depositAmount, setDepositAmount] = useState('')
   const [hasSuccessfulDeposit, setHasSuccessfulDeposit] = useState(false)
@@ -266,27 +266,41 @@ const TradingCard = ({
   const MIN_INVESTMENT = 10 // Minimum $10 to trade
   const FEE_PERCENTAGE = 0.01 // 1% commission fee
   
-  // Parse investment amount for validation
-  const investmentNum = parseFloat(investmentAmount) || 0
-  const targetProfitPercentNum = parseFloat(targetProfitPercent) || 0
+  // Memoize validation calculations for performance
+  // Parse investment amount for validation - use useMemo to avoid recalculation on every render
+  const investmentNum = useMemo(() => parseFloat(investmentAmount) || 0, [investmentAmount])
+  const targetProfitPercentNum = useMemo(() => parseFloat(targetProfitPercent) || 0, [targetProfitPercent])
+  
   // Calculate target profit USD from percent for validation and trading
-  const targetProfitNum = investmentNum > 0 && targetProfitPercentNum > 0 
-    ? (targetProfitPercentNum / 100) * investmentNum 
-    : 0
+  const targetProfitNum = useMemo(() => {
+    if (investmentNum > 0 && targetProfitPercentNum > 0) {
+      return (targetProfitPercentNum / 100) * investmentNum
+    }
+    return 0
+  }, [investmentNum, targetProfitPercentNum])
 
   // Sync targetProfit USD value when percent or investment changes
+  // Optimized: Only update when values actually change, not on every render
   useEffect(() => {
     if (targetProfitPercent && investmentNum > 0) {
       const pct = parseFloat(targetProfitPercent)
       if (!isNaN(pct) && pct >= 0) {
         const amount = (pct / 100) * investmentNum
-        setTargetProfit(amount.toFixed(2))
+        const newTargetProfit = amount.toFixed(2)
+        // Only update if value actually changed (prevents unnecessary re-renders)
+        if (targetProfit !== newTargetProfit) {
+          setTargetProfit(newTargetProfit)
+        }
       }
     } else if (!targetProfitPercent) {
-      setTargetProfit("")
+      if (targetProfit !== "") {
+        setTargetProfit("")
+      }
     }
-  }, [targetProfitPercent, investmentAmount, investmentNum, setTargetProfit])
+  }, [targetProfitPercent, investmentAmount, investmentNum, targetProfit, setTargetProfit])
   
+  // Memoize all validation calculations for instant button state updates
+  const validation = useMemo(() => {
   // Calculate commission fee (1% of trading amount)
   const commissionFee = investmentNum * FEE_PERCENTAGE
   
@@ -301,14 +315,41 @@ const TradingCard = ({
   // Minimum balance needed = $10 + $0.10 fee = $10.10
   const MIN_BALANCE_REQUIRED = MIN_INVESTMENT * (1 + FEE_PERCENTAGE)
   
-  // Validation checks
+    // Validation checks - all synchronous, no async operations
   const isInvestmentBelowMin = investmentNum > 0 && investmentNum < MIN_INVESTMENT
   const isInvestmentAboveMax = investmentNum > MAX_INVESTMENT && MAX_INVESTMENT > 0
   const hasEnoughForFee = avantisBalance >= totalRequired
   const isInvestmentValid = investmentNum >= MIN_INVESTMENT && investmentNum <= MAX_INVESTMENT && hasEnoughForFee
   const isBalanceTooLow = avantisBalance < MIN_BALANCE_REQUIRED
-  // Check if percent exceeds 100% (shouldn't happen due to clamping, but safety check)
   const isTargetProfitTooHigh = targetProfitPercentNum > 100
+    
+    return {
+      commissionFee,
+      totalRequired,
+      MAX_INVESTMENT,
+      MIN_BALANCE_REQUIRED,
+      isInvestmentBelowMin,
+      isInvestmentAboveMax,
+      hasEnoughForFee,
+      isInvestmentValid,
+      isBalanceTooLow,
+      isTargetProfitTooHigh
+    }
+  }, [investmentNum, targetProfitPercentNum, avantisBalance])
+  
+  // Destructure for use in component
+  const {
+    commissionFee,
+    totalRequired,
+    MAX_INVESTMENT,
+    MIN_BALANCE_REQUIRED,
+    isInvestmentBelowMin,
+    isInvestmentAboveMax,
+    hasEnoughForFee,
+    isInvestmentValid,
+    isBalanceTooLow,
+    isTargetProfitTooHigh
+  } = validation
 
   const explorerBaseUrl = process.env.NEXT_PUBLIC_AVANTIS_NETWORK === 'base-mainnet'
     ? 'https://basescan.org'
@@ -331,6 +372,21 @@ const TradingCard = ({
 
   // Check if there are active positions
   const hasActivePositions = positionData && positionData.openPositions > 0
+
+  // Memoize button disabled state for instant updates - calculate before render
+  const isButtonDisabled = useMemo(() => {
+    if (isTrading) return true
+    if (hasActivePositions) return false
+    // All validation checks are synchronous and use memoized values
+    return (
+      isTargetProfitTooHigh ||
+      !targetProfitPercent || 
+      !investmentAmount || 
+      targetProfitPercentNum <= 0 || 
+      targetProfitPercentNum > 100 ||
+      !isInvestmentValid
+    )
+  }, [isTrading, hasActivePositions, isTargetProfitTooHigh, targetProfitPercent, investmentAmount, targetProfitPercentNum, isInvestmentValid])
 
   // Guard against duplicate session starts
   const isStartingTradingRef = useRef(false)
@@ -508,7 +564,7 @@ const TradingCard = ({
                   value={targetProfitPercent}
                   onChange={(e) => {
                     const value = e.target.value
-                    // Allow empty input
+                    // Allow empty input - update immediately
                     if (value === "") {
                       setTargetProfitPercent("")
                       setTargetProfit("")
@@ -517,15 +573,17 @@ const TradingCard = ({
 
                     let pct = parseFloat(value)
                     if (isNaN(pct) || pct < 0) {
+                      // Allow typing negative numbers temporarily, but don't update targetProfit
                       setTargetProfitPercent(value)
                       return
                     }
 
-                    // Clamp to 0-100%
+                    // Clamp to 0-100% - update immediately
                     if (pct > 100) pct = 100
                     setTargetProfitPercent(pct.toString())
 
-                    const investmentVal = parseFloat(investmentAmount)
+                    // Calculate target profit immediately (synchronous, no delay)
+                    const investmentVal = parseFloat(investmentAmount) || 0
                     if (investmentVal > 0) {
                       const amount = (pct / 100) * investmentVal
                       setTargetProfit(amount.toFixed(2))
@@ -553,7 +611,23 @@ const TradingCard = ({
                 <Input
                   type="number"
                   value={investmentAmount}
-                  onChange={(e) => setInvestmentAmount(e.target.value)}
+                  onChange={(e) => {
+                    // Update immediately - no debouncing or delays
+                    const value = e.target.value
+                    setInvestmentAmount(value)
+                    
+                    // Also update target profit if percent is set (synchronous calculation)
+                    if (targetProfitPercent) {
+                      const pct = parseFloat(targetProfitPercent) || 0
+                      const inv = parseFloat(value) || 0
+                      if (pct > 0 && inv > 0) {
+                        const amount = (pct / 100) * inv
+                        setTargetProfit(amount.toFixed(2))
+                      } else {
+                        setTargetProfit("")
+                      }
+                    }
+                  }}
                   className={`bg-[#2a2a2a] border-[#444] text-white text-sm pr-12 ${
                     (isInvestmentBelowMin || isInvestmentAboveMax) ? 'border-red-500' : ''
                   }`}
@@ -720,19 +794,8 @@ const TradingCard = ({
         
         <Button 
           onClick={hasActivePositions ? (onViewTrades || (() => {})) : handleStartTrading}
-          disabled={
-            isTrading || 
-            positionsLoading || 
-            (!hasActivePositions && (
-              isTargetProfitTooHigh ||
-              !targetProfitPercent || 
-              !investmentAmount || 
-              parseFloat(targetProfitPercent) <= 0 || 
-              parseFloat(targetProfitPercent) > 100 ||
-              !isInvestmentValid
-            ))
-          }
-          className="w-full bg-[#8759ff] hover:bg-[#7C3AED] text-white font-semibold py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={isButtonDisabled}
+          className="w-full bg-[#8759ff] hover:bg-[#7C3AED] text-white font-semibold py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-opacity duration-150"
         >
           {isTrading ? 'Starting...' : hasActivePositions ? 'View Trades' : 'Start Trading'}
         </Button>
@@ -1413,51 +1476,66 @@ const TradeHistoryTab = ({
   const [tradeHistory, setTradeHistory] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalTrades, setTotalTrades] = useState(0)
+  const tradesPerPage = 4
   
-  useEffect(() => {
-    const loadTradeHistory = async () => {
-      if (!authToken) {
-        console.log('[TradeHistory] No auth token, skipping load')
-        return
-      }
-      
-      setIsLoading(true)
-      setError(null)
-      try {
-        console.log('[TradeHistory] Fetching trade history...')
-        // Fetch actual trade history from Avantis (closed trades)
-        const response = await fetch('/api/trade-history', {
-          headers: {
-            'Authorization': `Bearer ${authToken}`,
-            'Content-Type': 'application/json',
-          },
-        })
-        
-        if (response.ok) {
-          const data = await response.json()
-          console.log('[TradeHistory] Received data:', { count: data.count, tradesLength: data.trades?.length || 0, error: data.error })
-          setTradeHistory(data.trades || [])
-          if (data.error) {
-            console.warn('[TradeHistory] API returned error:', data.error)
-            setError(data.error)
-          }
-        } else {
-          const errorText = await response.text().catch(() => 'Unknown error')
-          console.error('[TradeHistory] API error:', response.status, errorText)
-          setError(`Failed to load trade history: ${errorText}`)
-          setTradeHistory([])
-        }
-      } catch (err) {
-        console.error('[TradeHistory] Fetch error:', err)
-        setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
-        setTradeHistory([])
-      } finally {
-        setIsLoading(false)
-      }
+  // Define loadTradeHistory using useCallback so it can be shared across useEffects
+  const loadTradeHistory = useCallback(async () => {
+    if (!authToken) {
+      console.log('[TradeHistory] No auth token, skipping load')
+      return
     }
     
+    setIsLoading(true)
+    setError(null)
+    try {
+      console.log('[TradeHistory] Fetching trade history...')
+      // Fetch actual trade history from Avantis (closed trades)
+      const response = await fetch('/api/trade-history', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log('[TradeHistory] Received data:', { count: data.count, tradesLength: data.trades?.length || 0, error: data.error })
+        const allTrades = data.trades || []
+        setTotalTrades(allTrades.length)
+        setTotalPages(Math.ceil(allTrades.length / tradesPerPage))
+        
+        // Paginate trades
+        const startIndex = (currentPage - 1) * tradesPerPage
+        const endIndex = startIndex + tradesPerPage
+        setTradeHistory(allTrades.slice(startIndex, endIndex))
+        
+        if (data.error) {
+          console.warn('[TradeHistory] API returned error:', data.error)
+          setError(data.error)
+        }
+      } else {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        console.error('[TradeHistory] API error:', response.status, errorText)
+        setError(`Failed to load trade history: ${errorText}`)
+        setTradeHistory([])
+      }
+    } catch (err) {
+      console.error('[TradeHistory] Fetch error:', err)
+      setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      setTradeHistory([])
+    } finally {
+      setIsLoading(false)
+    }
+  }, [authToken, currentPage, tradesPerPage])
+  
+  useEffect(() => {
     loadTradeHistory()
-    
+  }, [loadTradeHistory])
+  
+  useEffect(() => {
     // Listen for position closed events to reload trade history
     const handlePositionClosed = () => {
       console.log('[TradeHistory] Position closed event received, reloading...')
@@ -1475,17 +1553,17 @@ const TradeHistoryTab = ({
     }
     window.addEventListener('position-closed', handlePositionClosed)
     
-    // Refresh every 60 seconds
+    // Refresh every 120 seconds (reduced frequency to reduce server load)
     const interval = setInterval(() => {
       console.log('[TradeHistory] Auto-refreshing trade history...')
       loadTradeHistory()
-    }, 60000)
+    }, 120000) // 2 minutes instead of 1 minute
     
     return () => {
       clearInterval(interval)
       window.removeEventListener('position-closed', handlePositionClosed)
     }
-  }, [authToken])
+  }, [loadTradeHistory])
   
   const formatDate = (timestamp: number | string | undefined) => {
     if (!timestamp) return 'N/A'
@@ -1533,39 +1611,6 @@ const TradeHistoryTab = ({
           <div className="text-center">
             <button
               onClick={() => {
-                setIsLoading(true)
-                setError(null)
-                const loadTradeHistory = async () => {
-                  if (!authToken) return
-                  
-                  setIsLoading(true)
-                  setError(null)
-                  try {
-                    const response = await fetch('/api/trade-history', {
-                      headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                      },
-                    })
-                    
-                    if (response.ok) {
-                      const data = await response.json()
-                      setTradeHistory(data.trades || [])
-                      if (data.error) {
-                        setError(data.error)
-                      }
-                    } else {
-                      const errorText = await response.text().catch(() => 'Unknown error')
-                      setError(`Failed to load trade history: ${errorText}`)
-                      setTradeHistory([])
-                    }
-                  } catch (err) {
-                    setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                    setTradeHistory([])
-                  } finally {
-                    setIsLoading(false)
-                  }
-                }
                 loadTradeHistory()
               }}
               className="px-4 py-2 bg-[#8759ff] hover:bg-[#7c4dff] text-white text-xs rounded-lg transition-colors"
@@ -1586,41 +1631,6 @@ const TradeHistoryTab = ({
             <h3 className="text-white font-semibold text-lg">Trade History</h3>
             <button
               onClick={() => {
-                setIsLoading(true)
-                setError(null)
-                const loadTradeHistory = async () => {
-                  if (!authToken) return
-                  
-                  setIsLoading(true)
-                  setError(null)
-                  try {
-                    console.log('[TradeHistory] Manual refresh triggered')
-                    const response = await fetch('/api/trade-history', {
-                      headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                      },
-                    })
-                    
-                    if (response.ok) {
-                      const data = await response.json()
-                      console.log('[TradeHistory] Manual refresh - received data:', { count: data.count, tradesLength: data.trades?.length || 0, error: data.error })
-                      setTradeHistory(data.trades || [])
-                      if (data.error) {
-                        setError(data.error)
-                      }
-                    } else {
-                      const errorText = await response.text().catch(() => 'Unknown error')
-                      setError(`Failed to load trade history: ${errorText}`)
-                      setTradeHistory([])
-                    }
-                  } catch (err) {
-                    setError(`Failed to load trade history: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                    setTradeHistory([])
-                  } finally {
-                    setIsLoading(false)
-                  }
-                }
                 loadTradeHistory()
               }}
               disabled={isLoading}
@@ -1629,6 +1639,8 @@ const TradeHistoryTab = ({
               {isLoading ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
+          
+          
           {tradeHistory.length > 0 ? (
             <div className="space-y-3">
               {tradeHistory.map((trade, index) => {
@@ -1691,6 +1703,35 @@ const TradeHistoryTab = ({
               <p className="text-[#666] text-xs mt-2">Your completed trades will appear here</p>
             </div>
           )}
+          
+          {/* Pagination Controls */}
+          {totalTrades > tradesPerPage && (
+            <div className="flex items-center justify-between mt-6 pt-4 border-t border-[#374151]">
+              <div className="text-[#9ca3af] text-sm">
+                Showing {((currentPage - 1) * tradesPerPage) + 1} to {Math.min(currentPage * tradesPerPage, totalTrades)} of {totalTrades} trades
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1 || isLoading}
+                  className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                <span className="text-[#9ca3af] text-sm">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages || isLoading}
+                  className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+          
         </div>
       </div>
     </div>
@@ -2024,20 +2065,25 @@ export default function HomePage() {
     // Initial refresh
     if (tradingSession && tradingSession.status === 'running') {
       refreshSessionStatus(false);
+      // Also refresh positions when session is running
+      fetchPositions?.(true);
     }
     
-    // Set up polling interval
+    // Set up polling interval (reduced frequency to reduce server load)
     const interval = setInterval(() => {
       if (tradingSession && tradingSession.status === 'running') {
         refreshSessionStatus(false); // Just refresh existing session
+        // Also refresh positions when session is active
+        // Reduced frequency to 30 seconds to reduce server load
+        fetchPositions?.();
       }
-    }, 10000); // Refresh every 10 seconds
+    }, 30000); // Refresh every 30 seconds (was 10 seconds)
     
     // Cleanup: Clear interval on unmount or dependency change
     return () => {
       clearInterval(interval);
     };
-  }, [isConnected, tradingSession?.status, refreshSessionStatus]);
+  }, [isConnected, tradingSession?.status, refreshSessionStatus, fetchPositions]);
   
   useEffect(() => {
     if (!isConnected) return
@@ -2841,11 +2887,33 @@ export default function HomePage() {
                 {/* Positions Tab - Always visible */}
                 {activeTab === 'positions' && (
                   <div className="p-4 sm:p-6">
+                    {/* Debug info in development */}
+                    {process.env.NODE_ENV === 'development' && (
+                      <div className="mb-4 text-xs text-gray-500">
+                        Positions: {positionData?.positions?.length || 0} | 
+                        Open: {positionData?.openPositions || 0} | 
+                        Loading: {positionsLoading ? 'Yes' : 'No'}
+                        {positionData?.error && ` | Error: ${positionData.error}`}
+                      </div>
+                    )}
                     <PositionsTable
                       positions={positionData?.positions || []}
-                      isLoading={false}
+                      isLoading={positionsLoading}
                       onClosePosition={handleClosePosition}
                     />
+                    {/* Show message if no positions but session is running */}
+                    {!positionsLoading && (!positionData?.positions || positionData.positions.length === 0) && tradingSession?.status === 'running' && (
+                      <div className="text-center py-8 text-gray-400">
+                        <p>No positions found yet.</p>
+                        <p className="text-sm mt-2">Positions will appear here once opened by the trading bot.</p>
+                        <button
+                          onClick={() => fetchPositions?.(true)}
+                          className="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm"
+                        >
+                          Refresh Positions
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 

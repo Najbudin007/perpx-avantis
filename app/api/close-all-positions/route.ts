@@ -41,13 +41,24 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.fid
       const farcasterWalletService = getFarcasterWalletService()
-      const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+      // CRITICAL: Use getWalletWithKey() first to get existing wallet, only create if missing
+      // This ensures we always use the SAME wallet address (prevents inconsistency)
+      let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
       
       if (!farcasterWallet || !farcasterWallet.privateKey) {
+        // Wallet doesn't exist or has no private key - create it (only for first-time users)
+        console.log(`[CloseAllPositions] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
+        farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+      }
+      
+      if (!farcasterWallet || !farcasterWallet.privateKey) {
+        console.error(`[CloseAllPositions] Failed to get/create trading wallet for FID ${authContext.fid}`)
         return NextResponse.json({ 
-          error: 'No wallet found with private key' 
+          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
+      
+      console.log(`[CloseAllPositions] ✅ Using trading wallet: ${farcasterWallet.address} for FID: ${authContext.fid}`)
       
       wallet = {
         address: farcasterWallet.address,
@@ -64,18 +75,26 @@ export async function POST(request: NextRequest) {
       
       userId = authContext.webUserId
       const webWalletService = getWebWalletService()
-      const webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      // CRITICAL: Get existing wallet first to ensure consistency (same pattern as Farcaster)
+      let webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
+      
+      if (!webWallet) {
+        // Wallet doesn't exist - create it (only for first-time users)
+        console.log(`[CloseAllPositions] ⚠️ No existing trading wallet found for web user ${authContext.webUserId}, creating one...`)
+        webWallet = await webWalletService.ensureTradingWallet(authContext.webUserId)
+      }
       
       if (!webWallet) {
         return NextResponse.json({ 
-          error: 'No wallet found' 
+          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
       
       const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
       if (!privateKey) {
+        console.error(`[CloseAllPositions] Failed to get private key for web user ${authContext.webUserId}`)
         return NextResponse.json({ 
-          error: 'Wallet private key not available' 
+          error: 'Wallet private key not available. Please ensure your trading wallet is properly set up.' 
         }, { status: 404 })
       }
       
@@ -83,6 +102,7 @@ export async function POST(request: NextRequest) {
         address: webWallet.address,
         privateKey: privateKey
       }
+      console.log(`[CloseAllPositions] ✅ Using trading wallet: ${wallet.address} for web user: ${authContext.webUserId}`)
     }
 
     if (!wallet || !wallet.privateKey) {

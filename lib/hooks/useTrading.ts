@@ -78,6 +78,12 @@ export function useTrading() {
         clearTimeout(timeoutId);
 
         if (!response.ok) {
+          // Handle 404 gracefully (no sessions or endpoint not found is expected)
+          if (response.status === 404) {
+            console.log('[useTrading] 404 response (no sessions or endpoint not found), returning empty result');
+            return { success: true, sessions: [] };
+          }
+          
           let errorData;
           try {
             errorData = await response.json();
