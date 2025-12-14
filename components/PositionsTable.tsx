@@ -370,15 +370,14 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
     
     setIsClosing(true)
     try {
+      // Parent handler (onClosePosition) will show success/error toasts
+      // Don't show duplicate toasts here
       await onClosePosition(closingPosition)
       setClosingPosition(null)
-      addToast({
-        type: 'success',
-        title: 'Position Closed',
-        message: `Successfully closed ${closingPosition.coin || closingPosition.symbol} position`,
-      })
     } catch (error) {
       console.error('Failed to close position:', error)
+      // Only show error toast if parent didn't handle it
+      // (This should rarely happen as parent should handle all cases)
       const errorMessage = error instanceof Error ? error.message : 'Failed to close position'
       addToast({
         type: 'error',

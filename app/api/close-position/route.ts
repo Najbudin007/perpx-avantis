@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Parse request body - Avantis uses pair_index instead of symbol
-    const { pair_index, symbol } = await request.json()
+    const { pair_index, trade_index, symbol } = await request.json()
     
     // pair_index is required for Avantis
     if (!pair_index && !symbol) {
@@ -40,6 +40,9 @@ export async function POST(request: NextRequest) {
         error: 'pair_index is required (Avantis uses pair indices, not symbols)' 
       }, { status: 400 })
     }
+    
+    // trade_index defaults to 0 if not provided (for backward compatibility)
+    const tradeIndex = trade_index !== undefined && trade_index !== null ? trade_index : 0
 
     // Get user's wallet for private key based on context
     let wallet: { address: string; privateKey: string } | null = null
@@ -142,7 +145,7 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    console.log(`[ClosePosition] Closing position with pair_index ${pairIndex} for ${authContext.context} user:`, userId)
+    console.log(`[ClosePosition] Closing position with pair_index ${pairIndex}, trade_index ${tradeIndex} for ${authContext.context} user:`, userId)
     console.log(`[ClosePosition] Wallet address: ${wallet.address}`)
     console.log(`[ClosePosition] Private key available: ${wallet.privateKey ? `${wallet.privateKey.slice(0, 10)}...${wallet.privateKey.slice(-4)}` : 'MISSING'}`)
 
@@ -154,8 +157,8 @@ export async function POST(request: NextRequest) {
     })
     
     try {
-      // Pass private key explicitly to ensure it's used (even though it's in the client config)
-      const result = await avantisClient.closePosition(pairIndex, wallet.privateKey)
+      // Pass private key and trade_index explicitly to ensure it's used
+      const result = await avantisClient.closePosition(pairIndex, wallet.privateKey, tradeIndex)
       
       console.log(`[ClosePosition] Successfully closed position for pair_index ${pairIndex}`)
       return NextResponse.json({

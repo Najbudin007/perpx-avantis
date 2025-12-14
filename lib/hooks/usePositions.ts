@@ -32,6 +32,57 @@ export interface PositionData {
   error?: string; // Optional error message from API
 }
 
+// 🛑 LOCAL STORAGE CACHE: Persist positions across app reopens
+const POSITIONS_CACHE_KEY = 'perpx_positions_cache';
+const POSITIONS_CACHE_EXPIRY = 5 * 60 * 1000; // 5 minutes
+
+interface CachedPositions {
+  data: PositionData;
+  wallet: string;
+  timestamp: number;
+}
+
+function getCachedPositions(wallet: string | null): PositionData | null {
+  if (!wallet || typeof window === 'undefined') return null;
+  
+  try {
+    const cached = localStorage.getItem(POSITIONS_CACHE_KEY);
+    if (!cached) return null;
+    
+    const parsed: CachedPositions = JSON.parse(cached);
+    const now = Date.now();
+    
+    // Check if cache is valid (same wallet and not expired)
+    if (parsed.wallet?.toLowerCase() === wallet.toLowerCase() && 
+        (now - parsed.timestamp) < POSITIONS_CACHE_EXPIRY) {
+      console.log('[usePositions] Restoring positions from cache');
+      return parsed.data;
+    }
+    
+    // Cache expired or different wallet - clear it
+    localStorage.removeItem(POSITIONS_CACHE_KEY);
+    return null;
+  } catch (err) {
+    console.error('[usePositions] Error reading cache:', err);
+    return null;
+  }
+}
+
+function setCachedPositions(wallet: string | null, data: PositionData) {
+  if (!wallet || typeof window === 'undefined') return;
+  
+  try {
+    const cache: CachedPositions = {
+      data,
+      wallet: wallet.toLowerCase(),
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(POSITIONS_CACHE_KEY, JSON.stringify(cache));
+  } catch (err) {
+    console.error('[usePositions] Error writing cache:', err);
+  }
+}
+
 export function usePositions() {
   const { token } = useAuth();
   const { tradingWalletAddress } = useIntegratedWallet();
@@ -56,6 +107,23 @@ export function usePositions() {
     // Update ref when address changes
     walletAddress.current = walletAddressString;
   }, [walletAddressString]); // Only depend on address string (primitive)
+  
+  // 🛑 RESTORE CACHED POSITIONS ON MOUNT: Show positions immediately on app reopen
+  useEffect(() => {
+    const wallet = walletAddressString;
+    if (!wallet || positionData) return; // Don't restore if we already have data
+    
+    // Try to restore from cache
+    const cached = getCachedPositions(wallet);
+    if (cached) {
+      console.log('[usePositions] Restoring cached positions on mount');
+      setPositionData(cached);
+      openPositionsCountRef.current = cached.openPositions || 0;
+      hasEverLoadedRef.current = true;
+      // Don't set loading - we have cached data to show immediately
+      // Fresh data will be fetched in background by the initial fetch useEffect
+    }
+  }, [walletAddressString, positionData]); // Include positionData to prevent re-restoring
 
   // 🛑 SAFE FETCH WRAPPER - all fetches must go through this
   const fetchPositionsSafe = useCallback(async (wallet: string | null, force = false) => {
@@ -184,6 +252,11 @@ export function usePositions() {
         setHasStaleData(false); // Clear stale flag when we have fresh data
         hasEverLoadedRef.current = true;
         setError(null);
+        
+        // 🛑 CACHE: Save positions to localStorage for app reopen
+        if (wallet) {
+          setCachedPositions(wallet, data);
+        }
       } else if (data.positions && Array.isArray(data.positions) && data.positions.length === 0) {
         // Empty positions array from API
         // 🛑 CRITICAL: Never clear existing positions during background refresh
@@ -278,6 +351,11 @@ export function usePositions() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       
+      // Get trade_index (index) from position - required for closing when multiple positions exist on same pair
+      const trade_index = position?.index !== undefined && position?.index !== null 
+        ? position.index 
+        : 0; // Default to 0 if not specified
+      
       const response = await fetch('/api/close-position', {
         method: 'POST',
         headers: {
@@ -286,6 +364,7 @@ export function usePositions() {
         },
         body: JSON.stringify({ 
           pair_index: pair_index || (typeof positionIdentifier === 'number' ? positionIdentifier : undefined),
+          trade_index: trade_index, // Include trade_index for proper position identification
           symbol: position?.coin || position?.symbol || (typeof positionIdentifier === 'string' ? positionIdentifier : undefined)
         }),
         signal: controller.signal,
@@ -301,14 +380,23 @@ export function usePositions() {
       const result = await response.json();
       
       if (result.success) {
+        // Clear cache when position is closed (force fresh fetch)
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem(POSITIONS_CACHE_KEY);
+        }
+        
         // Refresh after close (with delay)
         setTimeout(() => {
           fetchPositionsSafe(walletAddress.current, true);
           window.dispatchEvent(new CustomEvent('position-closed'));
         }, 1000);
+        
+        return true;
+      } else {
+        // API returned success: false - throw error so parent handler can catch it
+        const errorMsg = result.error || result.message || 'Position close failed';
+        throw new Error(errorMsg);
       }
-      
-      return result.success;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to close position';
       console.error(`[usePositions] Error closing position ${identifier}:`, errorMessage);
@@ -348,10 +436,17 @@ export function usePositions() {
       const result = await response.json();
       
       if (result.success) {
+        // Clear cache when all positions are closed
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem(POSITIONS_CACHE_KEY);
+        }
+        
         setTimeout(() => fetchPositionsSafe(walletAddress.current, true), 1000);
+        return true;
+      } else {
+        const errorMsg = result.error || result.message || 'Failed to close all positions';
+        throw new Error(errorMsg);
       }
-      
-      return result.success;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to close all positions';
       console.error('[usePositions] Error closing all positions:', errorMessage);
@@ -361,6 +456,24 @@ export function usePositions() {
       closeAllInProgressRef.current = false;
     }
   }, [fetchPositionsSafe]);
+
+  // 🛑 RESTORE CACHED POSITIONS ON MOUNT: Show positions immediately on app reopen
+  // This runs BEFORE the initial fetch to restore cached data
+  useEffect(() => {
+    const wallet = walletAddressString;
+    if (!wallet || positionData) return; // Don't restore if we already have data
+    
+    // Try to restore from cache
+    const cached = getCachedPositions(wallet);
+    if (cached) {
+      console.log('[usePositions] Restoring cached positions on mount');
+      setPositionData(cached);
+      openPositionsCountRef.current = cached.openPositions || 0;
+      hasEverLoadedRef.current = true;
+      // Don't set loading - we have cached data to show immediately
+      // Fresh data will be fetched in background by the initial fetch useEffect
+    }
+  }, [walletAddressString]); // Only run when wallet changes, not positionData (to avoid loops)
 
   // 🛑 STABILIZE useEffect DEPENDENCIES: Only depend on primitives
   // Initial fetch when wallet/token changes
@@ -385,7 +498,8 @@ export function usePositions() {
     // Update ref
     walletAddress.current = wallet;
     
-    // Initial fetch
+    // Initial fetch (will run in background if we have cached data)
+    // fetchPositionsSafe will detect cached data and not show loading state
     fetchPositionsSafe(wallet, false);
   }, [token, walletAddressString]); // Only primitives: token (string) and wallet address (string)
 

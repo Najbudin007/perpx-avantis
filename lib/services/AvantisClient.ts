@@ -185,10 +185,11 @@ export class AvantisClient {
   /**
    * Close a specific position by pair index
    */
-  async closePosition(pairIndex: number, privateKey?: string): Promise<TradeResponse> {
+  async closePosition(pairIndex: number, privateKey?: string, tradeIndex: number = 0): Promise<TradeResponse> {
     try {
       const response = await this.axiosInstance.post('/api/close-position', {
         pair_index: pairIndex,
+        trade_index: tradeIndex, // Include trade_index for proper position identification
         private_key: privateKey || this.getPrivateKey(),
       });
 

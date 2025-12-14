@@ -57,6 +57,7 @@ class OpenPositionRequest(BaseModel):
 
 class ClosePositionRequest(BaseModel):
     pair_index: int = Field(..., description="Avantis pair index")
+    trade_index: int = Field(0, description="Trade index (defaults to 0 for backward compatibility)")
     private_key: str = Field(..., description="User's private key (required - each user provides their own)")
 
 
@@ -271,6 +272,7 @@ async def api_close_position(request: ClosePositionRequest):
     try:
         result = await close_position(
             pair_index=request.pair_index,
+            trade_index=request.trade_index,  # Use provided trade_index instead of hardcoding 0
             private_key=request.private_key
         )
         # Invalidate positions and trade history cache for this user

@@ -131,13 +131,15 @@ async def open_position(
 @retry_on_network_error()
 async def close_position(
     pair_index: int,
-    private_key: str
+    private_key: str,
+    trade_index: int = 0  # Default to 0 for backward compatibility
 ) -> Dict[str, Any]:
     """
     Close a specific position by pair index for a user.
     
     Args:
         pair_index: Avantis pair index
+        trade_index: Trade index (defaults to 0 for backward compatibility)
         private_key: User's private key (required - each user provides their own)
         
     Returns:
@@ -145,10 +147,10 @@ async def close_position(
     """
     try:
         # Close position using direct contract calls
-        # Note: trade_index defaults to 0 (first position for the pair)
+        # Use provided trade_index (defaults to 0 if not specified)
         result = await close_position_via_contract(
             pair_index=pair_index,
-            trade_index=0,  # Default to first trade index
+            trade_index=trade_index,  # Use provided trade_index
             private_key=private_key
         )
         
