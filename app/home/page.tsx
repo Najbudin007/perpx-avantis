@@ -2034,17 +2034,25 @@ export default function HomePage() {
   // Refresh session status when component mounts or when positions change
   const { positionData, isLoading: positionsLoading, closePosition, fetchPositions } = usePositions()
   
+  // 🛑 STABILIZE: Use refs to avoid function dependency
+  const fetchPositionsRef = useRef(fetchPositions);
+  const refreshBalancesRef = useRef(refreshBalances);
+  useEffect(() => {
+    fetchPositionsRef.current = fetchPositions;
+    refreshBalancesRef.current = refreshBalances;
+  }, [fetchPositions, refreshBalances]);
+  
   // Listen for position closed events to refresh balance
   useEffect(() => {
     const handlePositionClosed = () => {
       // Refresh balance and positions after close
-      refreshBalances?.()
-      fetchPositions(true)
+      refreshBalancesRef.current?.()
+      fetchPositionsRef.current?.(true)
     }
     
     window.addEventListener('position-closed', handlePositionClosed)
     return () => window.removeEventListener('position-closed', handlePositionClosed)
-  }, [refreshBalances, fetchPositions])
+  }, []) // Empty deps - handler uses refs
   
   // Handle viewing trades - show positions in modal
   const handleViewTrades = useCallback(async () => {
@@ -2059,23 +2067,35 @@ export default function HomePage() {
     }
   }, [positionData, addToast]);
   
+  // 🛑 STABILIZE: Extract primitive values from tradingSession
+  const tradingSessionStatusRef = useRef<string | null>(null);
+  const refreshSessionStatusRef = useRef(refreshSessionStatus);
+  
+  useEffect(() => {
+    tradingSessionStatusRef.current = tradingSession?.status || null;
+    refreshSessionStatusRef.current = refreshSessionStatus;
+  }, [tradingSession?.status, refreshSessionStatus]);
+  
   useEffect(() => {
     if (!isConnected) return
     
+    const sessionStatus = tradingSessionStatusRef.current;
+    
     // Initial refresh
-    if (tradingSession && tradingSession.status === 'running') {
-      refreshSessionStatus(false);
+    if (sessionStatus === 'running') {
+      refreshSessionStatusRef.current?.(false);
       // Also refresh positions when session is running
-      fetchPositions?.(true);
+      fetchPositionsRef.current?.(true);
     }
     
     // Set up polling interval (reduced frequency to reduce server load)
     const interval = setInterval(() => {
-      if (tradingSession && tradingSession.status === 'running') {
-        refreshSessionStatus(false); // Just refresh existing session
+      const currentStatus = tradingSessionStatusRef.current;
+      if (currentStatus === 'running') {
+        refreshSessionStatusRef.current?.(false); // Just refresh existing session
         // Also refresh positions when session is active
         // Reduced frequency to 30 seconds to reduce server load
-        fetchPositions?.();
+        fetchPositionsRef.current?.();
       }
     }, 30000); // Refresh every 30 seconds (was 10 seconds)
     
@@ -2083,21 +2103,35 @@ export default function HomePage() {
     return () => {
       clearInterval(interval);
     };
-  }, [isConnected, tradingSession?.status, refreshSessionStatus, fetchPositions]);
+  }, [isConnected]); // Only depend on isConnected (primitive)
+  
+  // 🛑 STABILIZE: Extract primitive values
+  const openPositionsCountRef = useRef(0);
+  const tradingSessionStatusRef2 = useRef<string | null>(null);
+  const refreshSessionStatusRef2 = useRef(refreshSessionStatus);
+  
+  useEffect(() => {
+    openPositionsCountRef.current = positionData?.openPositions || 0;
+    tradingSessionStatusRef2.current = tradingSession?.status || null;
+    refreshSessionStatusRef2.current = refreshSessionStatus;
+  }, [positionData?.openPositions, tradingSession?.status, refreshSessionStatus]);
   
   useEffect(() => {
     if (!isConnected) return
     
     let timeoutId: NodeJS.Timeout | null = null
     
-    if (positionData && positionData.openPositions > 0 && !tradingSession && avantisBalance > 0) {
+    const openPositions = openPositionsCountRef.current;
+    const sessionStatus = tradingSessionStatusRef2.current;
+    
+    if (openPositions > 0 && !sessionStatus && avantisBalance > 0) {
       // Restore session if positions exist but no session
       timeoutId = setTimeout(() => {
-        refreshSessionStatus(true).catch(err => {
+        refreshSessionStatusRef2.current?.(true).catch(err => {
           // Silent error handling
         });
       }, 1000); // Small delay to avoid race conditions
-    } else if (!positionData?.openPositions && tradingSession && tradingSession.status !== 'running') {
+    } else if (openPositions === 0 && sessionStatus && sessionStatus !== 'running') {
       // Clean up session if no positions and session not running
     }
     
@@ -2105,7 +2139,7 @@ export default function HomePage() {
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [isConnected, positionData?.openPositions, tradingSession, avantisBalance, refreshSessionStatus]);
+  }, [isConnected, avantisBalance]); // Only primitives
   
   // Transaction status polling with timeout
   const pollTransactionStatus = useCallback((

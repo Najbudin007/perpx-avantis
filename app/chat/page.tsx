@@ -59,6 +59,12 @@ export default function ChatPage() {
     closePosition: closeIndividualPosition,
     closeAllPositions: closeAllPositionsHook,
   } = usePositions()
+  
+  // 🛑 STABILIZE: Use ref to avoid function dependency in callbacks
+  const fetchPositionsRef = useRef(fetchPositions);
+  useEffect(() => {
+    fetchPositionsRef.current = fetchPositions;
+  }, [fetchPositions]);
 
   // Wallet integration
   const {
@@ -403,7 +409,7 @@ export default function ChatPage() {
             await stopTrading(tradingSession.sessionId);
             
             // Refresh positions to show updated data
-            await fetchPositions();
+            await fetchPositionsRef.current?.();
           }
         }
       } else {
@@ -424,7 +430,7 @@ export default function ChatPage() {
           setMessages(prev => [...prev, closeMessage]);
           
           // Refresh positions data
-          await fetchPositions();
+          await fetchPositionsRef.current?.();
         } else {
           addToast({
             type: 'error',
@@ -453,7 +459,7 @@ export default function ChatPage() {
       // Remove from closing positions list
       setClosingPositions((prev) => prev.filter((id) => id !== positionId));
     }
-  }, [tradingSession, closeIndividualPosition, stopTrading, fetchPositions])
+  }, [tradingSession, closeIndividualPosition, stopTrading]) // Removed fetchPositions - using ref instead
 
   const handleCloseAllPositions = useCallback(async () => {
     if (!positionData || positionData.openPositions === 0) {
@@ -482,7 +488,7 @@ export default function ChatPage() {
         }
         
         // Refresh positions to show updated data
-        await fetchPositions();
+        await fetchPositionsRef.current?.();
       } else {
         const errorMessage = {
           type: "bot" as const,
@@ -502,7 +508,7 @@ export default function ChatPage() {
       // Clear all closing positions
       setClosingPositions([]);
     }
-  }, [positionData, closeAllPositionsHook, tradingSession, stopTrading, fetchPositions])
+  }, [positionData, closeAllPositionsHook, tradingSession, stopTrading]) // Removed fetchPositions
 
   const toggleTerminal = useCallback(() => {
     setIsTerminalExpanded(!isTerminalExpanded)

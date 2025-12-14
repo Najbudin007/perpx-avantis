@@ -1,13 +1,21 @@
 """Rate limiting middleware for FastAPI."""
 import time
 from collections import defaultdict
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Import cache for returning cached data when rate limited (positions endpoint)
+try:
+    from cache import cache as request_cache
+    CACHE_AVAILABLE = True
+except ImportError:
+    CACHE_AVAILABLE = False
+    request_cache = None
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -79,9 +87,40 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Remove timestamps older than 1 minute
         user_requests[:] = [ts for ts in user_requests if ts > now - 60.0]
         
+        # For positions endpoint, check cache FIRST before rate limiting
+        # This prevents UI flickering by returning cached data immediately
+        if endpoint == "/api/positions" and CACHE_AVAILABLE and request_cache:
+            try:
+                # Extract private_key or address from request
+                private_key = request.query_params.get("private_key")
+                address = request.query_params.get("address")
+                
+                # Try to get cached positions (non-blocking check)
+                cached_positions = await request_cache.get("positions", private_key=private_key, address=address)
+                if cached_positions is not None:
+                    # Return cached data immediately without counting as a request
+                    # This prevents rate limiting from affecting UI stability
+                    logger.debug(f"📊 [RATE_LIMIT] Returning cached positions ({len(cached_positions)} positions) - skipping rate limit check")
+                    return JSONResponse(
+                        status_code=200,
+                        content={"positions": cached_positions, "count": len(cached_positions), "cached": True}
+                    )
+            except Exception as e:
+                logger.debug(f"Could not get cached positions: {e}")
+        
         # Check burst limit (immediate limit) - increased to handle multiple hooks
         if len(user_requests) >= self.burst:
             logger.warning(f"🚫 [RATE_LIMIT] Burst limit exceeded: {endpoint} for {user_id[:20]}... ({len(user_requests)} requests)")
+            
+            # For positions endpoint, return empty positions instead of 429 to prevent UI flickering
+            if endpoint == "/api/positions":
+                logger.info(f"📊 [RATE_LIMIT] Rate limited - returning empty positions to prevent UI flickering")
+                return JSONResponse(
+                    status_code=200,
+                    content={"positions": [], "count": 0, "cached": False, "rate_limited": True}
+                )
+            
+            # If not positions endpoint, return 429
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
@@ -94,6 +133,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check per-minute limit
         if len(user_requests) >= self.requests_per_minute:
             logger.warning(f"🚫 [RATE_LIMIT] Rate limit exceeded: {endpoint} for {user_id[:20]}... ({len(user_requests)} requests)")
+            
+            # For positions endpoint, return empty positions instead of 429 to prevent UI flickering
+            if endpoint == "/api/positions":
+                logger.info(f"📊 [RATE_LIMIT] Rate limited - returning empty positions to prevent UI flickering")
+                return JSONResponse(
+                    status_code=200,
+                    content={"positions": [], "count": 0, "cached": False, "rate_limited": True}
+                )
+            
+            # If not positions endpoint, return 429
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
@@ -103,7 +152,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 }
             )
         
-        # Record this request
+        # Record this request (only if we're actually processing it)
         user_requests.append(now)
         
         # Process request
