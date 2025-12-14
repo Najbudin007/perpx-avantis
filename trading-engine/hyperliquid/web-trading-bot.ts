@@ -303,8 +303,16 @@ export class WebTradingBot {
           
           for (const symbol of tokens) {
             // Check slots BEFORE each evaluation to respect limit
-            if (entriesThis >= slotsLeft) {
-              log('WEB_BOT', `🛑 Slot limit reached (${entriesThis}/${slotsLeft}). Skipping remaining symbols.`);
+            // Use entriesThis instead of slotsLeft to ensure we stop immediately when limit is reached
+            if (entriesThis >= maxPerSession) {
+              log('WEB_BOT', `🛑 Max positions limit reached (${entriesThis}/${maxPerSession}). Skipping remaining symbols.`);
+              break;
+            }
+            
+            // Recalculate slotsLeft based on current entriesThis
+            slotsLeft = maxPerSession - entriesThis;
+            if (slotsLeft <= 0) {
+              log('WEB_BOT', `🛑 No slots available. Skipping remaining symbols.`);
               break;
             }
 
@@ -414,7 +422,8 @@ export class WebTradingBot {
                   if (avantisResult && avantisResult.success) {
                     // Increment daily trade counter
                     this.tradesOpenedToday++;
-                    entriesThis++; // CRITICAL: Increment immediately to prevent opening multiple positions
+                    // NOTE: Don't increment entriesThis here - it will be incremented when processing the result
+                    // This prevents double-counting
                     
                     log('AVANTIS', `✅✅✅ Position SUCCESSFULLY opened on Avantis Dashboard!`);
                     log('AVANTIS', `   Symbol: ${symbol} | Direction: ${isLong ? 'LONG' : 'SHORT'}`);
@@ -428,7 +437,7 @@ export class WebTradingBot {
                     log('AVANTIS', `   📊 The position will appear in "Current Positions" section`);
                     log('AVANTIS', `   ==========================================`);
                     
-                    // CRITICAL: If maxPerSession is 1, immediately break out of symbol loop
+                    // CRITICAL: If maxPerSession is 1, immediately signal to stop evaluating
                     // This prevents opening multiple positions when user only wants one
                     if (maxPerSession === 1) {
                       log('WEB_BOT', `🛑 Max positions reached (1). Stopping position evaluation.`);
@@ -512,28 +521,27 @@ export class WebTradingBot {
               
               // Check if we should stop evaluating (e.g., maxPerSession=1 and position opened)
               if ((result as any).stopEvaluating) {
+                // Increment counters before breaking
+                entriesThis++;
+                this.openPositions++;
                 log('WEB_BOT', `🛑 Stopping position evaluation after opening ${evalSymbol} (maxPerSession=${maxPerSession})`);
+                log('WEB_BOT', `✅ ${evalSymbol} opened | Entries: ${entriesThis}/${maxPerSession}`);
                 break; // Break out of symbol loop immediately
               }
               
               if (positionOpened) {
                 entriesThis++;
                 this.openPositions++;
+                slotsLeft = maxPerSession - entriesThis; // Recalculate slots based on actual entries
                 
-                // CRITICAL: Double-check position count after opening
-                // If maxPerSession is 1, we should stop immediately
-                if (maxPerSession === 1 && entriesThis >= 1) {
-                  log('WEB_BOT', `🛑 Max positions reached (${entriesThis}/${maxPerSession}). Stopping position evaluation.`);
-                  break; // Break out of symbol loop
-                }
-                slotsLeft--; // Decrease available slots immediately
                 log('WEB_BOT', `✅ ${evalSymbol} opened | Score=${signalScore} | Entries: ${entriesThis}/${maxPerSession}`);
                 log('WEB_BOT', `📊 Total open positions: ${this.openPositions}, Slots remaining: ${slotsLeft}`);
                 
-                // STOP after opening a position if we've reached the limit
-                if (entriesThis >= (maxPerSession - positions.length)) {
-                  log('WEB_BOT', `🛑 Position limit reached. Stopping symbol evaluation.`);
-                  break;
+                // CRITICAL: Stop immediately if we've reached maxPerSession
+                // This prevents opening multiple positions in the same cycle
+                if (entriesThis >= maxPerSession) {
+                  log('WEB_BOT', `🛑 Max positions reached (${entriesThis}/${maxPerSession}). Stopping position evaluation.`);
+                  break; // Break out of symbol loop immediately
                 }
               } else {
                 log('WEB_BOT', `${evalSymbol} => ❌ No trade | Reason: ${reason}`);

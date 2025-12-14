@@ -431,8 +431,18 @@ async def api_get_positions(
             logger.info(f"📊 [API] Derived address from private_key: {derived_address}")
         
         # Use cache with 20 second TTL (positions change frequently)
+        # Add timeout wrapper to prevent hanging (30 seconds max)
         async def _fetch_positions():
-            return await get_positions(private_key=private_key, address=address)
+            try:
+                # Wrap with timeout to prevent hanging on slow RPC calls
+                return await asyncio.wait_for(
+                    get_positions(private_key=private_key, address=address),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("📊 [API] Position fetching timed out after 30s - RPC may be slow")
+                # Return empty positions on timeout (better than hanging)
+                return []
         
         positions = await cache.get_or_compute(
             "positions",

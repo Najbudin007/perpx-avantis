@@ -824,7 +824,7 @@ export async function getAvantisPositions(privateKey: string): Promise<Array<{
     const timeoutId = setTimeout(() => {
       controller.abort();
       console.warn(`[AVANTIS] ⚠️ Timeout fetching positions from Avantis service (${baseUrl})`);
-    }, 15000); // 15 second timeout (increased from 8s to handle slow responses)
+    }, 35000); // 35 second timeout (increased to handle RPC rate limiting and slow responses)
     
     try {
       const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {

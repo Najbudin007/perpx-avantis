@@ -247,14 +247,23 @@ async def get_positions(
             })
         
         # Fetch current prices to calculate PnL (using Binance API instead of SDK)
+        # Add timeout to prevent price fetching from blocking position response
         if formatted_positions:
             try:
                 from price_fetcher import fetch_prices_for_symbols
                 symbols = [pos["symbol"] for pos in formatted_positions if pos.get("symbol")]
                 logger.debug(f"💰 [PRICE] Fetching prices for: {symbols}")
                 if symbols:
-                    price_map = await fetch_prices_for_symbols(list(set(symbols)))
-                    logger.debug(f"💰 [PRICE] Got prices: {price_map}")
+                    # Add 5 second timeout for price fetching (non-blocking)
+                    try:
+                        price_map = await asyncio.wait_for(
+                            fetch_prices_for_symbols(list(set(symbols))),
+                            timeout=5.0
+                        )
+                        logger.debug(f"💰 [PRICE] Got prices: {price_map}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"💰 [PRICE] Price fetching timed out after 5s - using entry prices")
+                        price_map = {}  # Use entry prices if price fetch times out
                     
                     # Update positions with current prices and calculate PnL
                     for pos in formatted_positions:

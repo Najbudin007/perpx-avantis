@@ -100,9 +100,14 @@ export function usePositions() {
 
     try {
       const controller = new AbortController();
+      // Increase timeout to 70 seconds to match backend timeout chain:
+      // - Avantis service: 30s
+      // - Trading engine: 45s (calls avantis-service)
+      // - Next.js API: 60s (calls trading-engine)
+      // Total: ~30-40s + overhead, so 70s gives comfortable margin
       const timeoutId = setTimeout(() => {
         controller.abort();
-      }, 30000);
+      }, 70000);
 
       const response = await fetch('/api/positions', {
         headers: {
