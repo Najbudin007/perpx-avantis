@@ -148,9 +148,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add rate limiting middleware (60 requests/minute, 20 burst to handle multiple hooks)
+# Add rate limiting middleware (60 requests/minute, 30 burst to handle multiple hooks and reduce flickering)
 from rate_limit import RateLimitMiddleware
-app.add_middleware(RateLimitMiddleware, requests_per_minute=60, burst=20)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=60, burst=30)
 
 
 # Health check endpoint - optimized for speed (no settings access, no middleware)

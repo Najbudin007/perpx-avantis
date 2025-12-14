@@ -401,10 +401,10 @@ export function usePositions() {
           }
 
           // Poll with reduced frequency to reduce server load and avoid rate limiting
-          // Poll every 45 seconds when positions exist (increased from 30s)
-          // Poll every 90 seconds when no positions (increased from 60s)
+          // Poll every 60 seconds when positions exist (further increased to reduce rate limiting)
+          // Poll every 120 seconds when no positions (further increased)
           // Backend caching (30s TTL) ensures fresh data without excessive RPC calls
-          const pollInterval = positionData && positionData.openPositions > 0 ? 45000 : 90000;
+          const pollInterval = positionData && positionData.openPositions > 0 ? 60000 : 120000;
           interval = setInterval(async () => {
             // Only fetch if we have a token and not already in progress
             if (token && !fetchInProgressRef.current && !document.hidden) {

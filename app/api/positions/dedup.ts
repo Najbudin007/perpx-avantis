@@ -1,13 +1,22 @@
 /**
  * Request deduplication for positions API.
  * Prevents multiple simultaneous requests for the same user.
+ * FIXED: Caches data instead of response to avoid ReadableStream locked errors.
  */
+import { NextResponse } from 'next/server';
+
 interface PendingRequest {
   promise: Promise<any>;
   timestamp: number;
 }
 
+interface CachedData {
+  data: any;
+  timestamp: number;
+}
+
 const pendingRequests = new Map<string, PendingRequest>();
+const cachedData = new Map<string, CachedData>();
 const CACHE_TTL = 20000; // 20 seconds (matches backend cache)
 const REQUEST_TIMEOUT = 30000; // 30 seconds
 
@@ -17,28 +26,72 @@ export async function deduplicateRequest<T>(
 ): Promise<T> {
   const now = Date.now();
   
-  // Clean up old pending requests
+  // Clean up old pending requests and cached data
   for (const [k, req] of pendingRequests.entries()) {
     if (now - req.timestamp > REQUEST_TIMEOUT) {
       pendingRequests.delete(k);
     }
+  }
+  for (const [k, cached] of cachedData.entries()) {
+    if (now - cached.timestamp > CACHE_TTL) {
+      cachedData.delete(k);
+    }
+  }
+  
+  // Check if we have cached data (not expired) - use this first to avoid ReadableStream issues
+  const cached = cachedData.get(key);
+  if (cached && (now - cached.timestamp) < CACHE_TTL) {
+    console.log(`[DEDUP] Using cached data for key: ${key.substring(0, 20)}...`);
+    // Create a new NextResponse from cached data to avoid ReadableStream locked error
+    return NextResponse.json(cached.data) as T;
   }
   
   // Check if there's already a pending request for this key
   const existing = pendingRequests.get(key);
   if (existing && (now - existing.timestamp) < REQUEST_TIMEOUT) {
     console.log(`[DEDUP] Reusing existing request for key: ${key.substring(0, 20)}...`);
-    return existing.promise;
+    // Wait for the existing request and extract data, then create new response
+    try {
+      const existingResult = await existing.promise;
+      // Extract JSON data from NextResponse if it's a response object
+      let data;
+      if (existingResult && typeof existingResult === 'object' && 'json' in existingResult) {
+        data = await (existingResult as any).json();
+      } else {
+        data = existingResult;
+      }
+      // Cache the data
+      cachedData.set(key, { data, timestamp: now });
+      // Create a new NextResponse from the data
+      return NextResponse.json(data) as T;
+    } catch (error) {
+      // If existing request failed, remove it and create new one
+      pendingRequests.delete(key);
+      // Fall through to create new request
+    }
   }
   
   // Create new request
   const promise = fetchFn()
-    .then(result => {
+    .then(async (result) => {
+      // Extract JSON data from NextResponse if it's a response object
+      let data;
+      if (result && typeof result === 'object' && 'json' in result) {
+        data = await (result as any).json();
+      } else {
+        data = result;
+      }
+      
+      // Cache the data (not the response object) to avoid ReadableStream locked errors
+      cachedData.set(key, { data, timestamp: now });
+      
       // Remove from pending after completion
       setTimeout(() => {
         pendingRequests.delete(key);
-      }, 1000); // Keep for 1 second after completion for deduplication
-      return result;
+      }, 2000); // Keep for 2 seconds after completion for deduplication
+      
+      // Return a new NextResponse created from the data
+      return NextResponse.json(data) as T;
     })
     .catch(error => {
       // Remove from pending on error
