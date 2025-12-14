@@ -177,12 +177,17 @@ async function getAvantisBalance(privateKey) {
         const avantisApiUrl = getAvantisApiUrl();
         const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
         // Use the /api/balance endpoint with private_key as query parameter
+        // Add timeout to prevent hanging (10 seconds)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         const response = await fetch(`${baseUrl}/api/balance?private_key=${encodeURIComponent(privateKey)}`, {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
             },
+            signal: controller.signal,
         });
+        clearTimeout(timeoutId);
         if (!response.ok) {
             console.warn(`[AVANTIS] ⚠️ Failed to get balance: ${response.statusText}`);
             return 0;
@@ -703,7 +708,7 @@ async function getAvantisPositions(privateKey) {
         const timeoutId = setTimeout(() => {
             controller.abort();
             console.warn(`[AVANTIS] ⚠️ Timeout fetching positions from Avantis service (${baseUrl})`);
-        }, 15000); // 15 second timeout (increased from 8s to handle slow responses)
+        }, 35000); // 35 second timeout (increased to handle RPC rate limiting and slow responses)
         try {
             const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
                 method: 'GET',

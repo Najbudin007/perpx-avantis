@@ -445,6 +445,36 @@ app.get('/api/positions', async (req, res) => {
         }
         // Get positions from Avantis service using private key
         const avantisApiUrl = process.env.AVANTIS_API_URL || 'http://localhost:8000';
+        // Check if Avantis service is available before making request
+        // This prevents log spam from connection refused errors
+        try {
+            // Quick health check (with short timeout)
+            const healthController = new AbortController();
+            const healthTimeout = setTimeout(() => healthController.abort(), 2000); // 2 second timeout for health check
+            const healthResponse = await fetch(`${avantisApiUrl}/health`, {
+                method: 'GET',
+                signal: healthController.signal,
+            }).catch(() => null);
+            clearTimeout(healthTimeout);
+            if (!healthResponse || !healthResponse.ok) {
+                // Avantis service not available - return empty positions instead of error
+                console.log(`[API] Avantis service not available at ${avantisApiUrl}, returning empty positions`);
+                return {
+                    positions: [],
+                    totalPnL: 0,
+                    openPositions: 0
+                };
+            }
+        }
+        catch (healthError) {
+            // Service not available - return empty positions
+            console.log(`[API] Avantis service health check failed, returning empty positions`);
+            return {
+                positions: [],
+                totalPnL: 0,
+                openPositions: 0
+            };
+        }
         // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
@@ -487,6 +517,67 @@ app.get('/api/positions', async (req, res) => {
                     totalPnL,
                     openPositions
                 });
+            }
+            else if (avantisResponse && avantisResponse.status === 429) {
+                // Handle rate limit errors gracefully
+                const errorData = await avantisResponse.json().catch(() => ({}));
+                const retryAfter = errorData.retry_after || 2;
+                console.warn(`[API] Rate limited by Avantis service, retrying after ${retryAfter}s`);
+                // Retry once after the specified delay
+                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                // Retry the request
+                const retryController = new AbortController();
+                const retryTimeoutId = setTimeout(() => retryController.abort(), 45000);
+                try {
+                    const retryResponse = await fetch(`${avantisApiUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        signal: retryController.signal,
+                    });
+                    clearTimeout(retryTimeoutId);
+                    if (retryResponse && retryResponse.ok) {
+                        const retryData = await retryResponse.json();
+                        const positions = (retryData.positions || []).map(pos => ({
+                            coin: pos.symbol,
+                            symbol: pos.symbol,
+                            pair_index: pos.pair_index,
+                            index: pos.index || 0,
+                            size: (pos.position_size || (pos.collateral * pos.leverage)).toString(),
+                            side: pos.is_long ? 'long' : 'short',
+                            entryPrice: pos.entry_price,
+                            markPrice: pos.current_price,
+                            pnl: pos.pnl,
+                            roe: pos.pnl_percentage || (pos.entry_price > 0 ? (pos.pnl / (pos.collateral * pos.leverage)) * 100 : 0),
+                            positionValue: pos.position_size || (pos.collateral * pos.leverage),
+                            margin: pos.collateral.toString(),
+                            leverage: pos.leverage.toString(),
+                            liquidationPrice: pos.liquidation_price || null,
+                            collateral: pos.collateral,
+                            takeProfit: pos.take_profit || null,
+                            stopLoss: pos.stop_loss || null
+                        }));
+                        const totalPnL = positions.reduce((sum, pos) => sum + (pos.pnl || 0), 0);
+                        const openPositions = positions.length;
+                        console.log(`[API] Retrieved ${openPositions} positions from Avantis (after retry)`);
+                        return res.json({
+                            positions,
+                            totalPnL,
+                            openPositions
+                        });
+                    }
+                }
+                catch (retryError) {
+                    clearTimeout(retryTimeoutId);
+                    // If retry also fails, return empty positions instead of error
+                    console.warn(`[API] Retry after rate limit also failed, returning empty positions`);
+                    return res.json({
+                        positions: [],
+                        totalPnL: 0,
+                        openPositions: 0
+                    });
+                }
             }
             else {
                 const errorText = await avantisResponse.text().catch(() => 'Unknown error');

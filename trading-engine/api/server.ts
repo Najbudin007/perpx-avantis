@@ -552,7 +552,7 @@ app.get('/api/positions', async (req, res) => {
         });
       } else if (avantisResponse && avantisResponse.status === 429) {
         // Handle rate limit errors gracefully
-        const errorData = await avantisResponse.json().catch(() => ({}));
+        const errorData = await avantisResponse.json().catch(() => ({})) as { retry_after?: number };
         const retryAfter = errorData.retry_after || 2;
         
         console.warn(`[API] Rate limited by Avantis service, retrying after ${retryAfter}s`);
