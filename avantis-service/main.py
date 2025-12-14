@@ -284,7 +284,29 @@ async def api_close_position(request: ClosePositionRequest):
         await cache.invalidate("trade-history", private_key=None, address=user_address)
         logger.info(f"💾 [CACHE] Invalidated positions and trade history cache after closing position")
         return result
+    except ValueError as e:
+        error_msg = str(e)
+        # Check if it's an insufficient funds error
+        if "insufficient" in error_msg.lower() or "balance" in error_msg.lower():
+            logger.error(f"Insufficient funds error in close_position: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg
+            )
+        # Re-raise other ValueError as-is
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_msg
+        )
     except Exception as e:
+        error_msg = str(e)
+        # Check if it's an insufficient funds error from Web3
+        if "insufficient funds" in error_msg.lower():
+            logger.error(f"Insufficient funds error in close_position: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Insufficient ETH balance for gas fees. Please add ETH to your trading wallet to cover transaction costs."
+            )
         logger.error(f"Error in close_position: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

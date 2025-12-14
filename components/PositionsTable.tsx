@@ -453,11 +453,8 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
   if (isLoading) {
     return (
       <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
-        <div className="animate-pulse">
-          <div className="h-10 bg-[#2a2a2a] border-b border-[#374151]"></div>
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-16 bg-[#1a1a1a] border-b border-[#262626]"></div>
-          ))}
+        <div className="p-4 sm:p-6">
+          <div className="text-center text-[#9ca3af] text-sm">Loading positions...</div>
         </div>
       </div>
     )

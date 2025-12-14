@@ -733,6 +733,43 @@ async def close_position_via_contract(
         # Default execution fee for closing (can be tuned)
         execution_fee_wei = int(0.0003 * 10**18)  # e.g. 0.0003 ETH
 
+    # 2.5) Check wallet balance before attempting to close
+    def _get_balance():
+        return trading.web3.eth.get_balance(trader_address)
+    
+    wallet_balance_wei = await asyncio.to_thread(_get_balance)
+    wallet_balance_eth = wallet_balance_wei / 10**18
+    
+    # Estimate gas cost (rough estimate: 200k gas * 2 gwei = 0.0004 ETH)
+    # We'll use a conservative estimate of 300k gas
+    estimated_gas = 300000  # Conservative estimate
+    gas_price_wei = trading.web3.eth.gas_price
+    estimated_gas_cost_wei = estimated_gas * gas_price_wei
+    
+    # Total required: execution fee + gas cost + small buffer (10%)
+    total_required_wei = execution_fee_wei + estimated_gas_cost_wei
+    total_required_wei = int(total_required_wei * 1.1)  # Add 10% buffer
+    total_required_eth = total_required_wei / 10**18
+    
+    logger.info(
+        f"💰 Balance check: wallet={wallet_balance_eth:.6f} ETH, "
+        f"required={total_required_eth:.6f} ETH "
+        f"(execution_fee={execution_fee_wei/10**18:.6f} ETH, "
+        f"gas_estimate={estimated_gas_cost_wei/10**18:.6f} ETH)"
+    )
+    
+    if wallet_balance_wei < total_required_wei:
+        required_eth = total_required_eth
+        have_eth = wallet_balance_eth
+        shortfall_eth = required_eth - have_eth
+        raise ValueError(
+            f"Insufficient ETH balance for gas fees. "
+            f"Required: {required_eth:.6f} ETH, "
+            f"Have: {have_eth:.6f} ETH, "
+            f"Shortfall: {shortfall_eth:.6f} ETH. "
+            f"Please add ETH to your trading wallet to cover gas fees."
+        )
+
     # 3) Build & send tx
     tx = trading.build_close_trade_market_tx(
         pair_index=pair_index,

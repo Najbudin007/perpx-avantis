@@ -172,7 +172,9 @@ export async function POST(request: NextRequest) {
       
       // Provide more detailed error message for all users (especially Farcaster)
       let userFriendlyError = errorMessage
-      if (errorMessage.includes('No trading wallet') || errorMessage.includes('No wallet found')) {
+      if (errorMessage.includes('Insufficient ETH') || errorMessage.includes('insufficient funds') || errorMessage.includes('insufficient ETH balance')) {
+        userFriendlyError = 'Insufficient ETH balance for gas fees. Please add ETH to your trading wallet to cover transaction costs. You need approximately 0.0003-0.0005 ETH for closing positions.'
+      } else if (errorMessage.includes('No trading wallet') || errorMessage.includes('No wallet found')) {
         userFriendlyError = 'Trading wallet not found. Please restart your trading session or ensure your wallet is set up.'
       } else if (errorMessage.includes('No open trade found') || errorMessage.includes('No open position')) {
         userFriendlyError = 'Position not found. It may have already been closed.'
