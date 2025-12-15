@@ -27,6 +27,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useBaseAccountTransactions } from "@/lib/services/BaseAccountTransactionService"
 import { useBaseMiniApp } from "@/lib/hooks/useBaseMiniApp"
+import { getAssetIcon } from "@/lib/utils/assetIcons"
 
 // Type definitions
 interface TokenBalance {
@@ -1746,17 +1747,19 @@ const TradeHistoryTab = ({
                       const collateral = typeof rawCollateral === 'string' ? parseFloat(rawCollateral) || 0 : rawCollateral
                       const positionSize = trade.position_size || trade.size || (collateral && leverage ? collateral * leverage : null)
                       const dateLabel = trade.date || formatDate(trade.timestamp)
+                      const { bgClass, label, textClass } = getAssetIcon(symbol)
                       
                       return (
                         <tr key={trade.id || trade.tx_hash || index} className="border-b border-[#262626] hover:bg-[#2a2a2a]/50 transition-colors">
                           <td className="px-4 py-4">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-[#f7931a] flex items-center justify-center">
-                                <span className="text-white font-bold text-xs">₿</span>
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${bgClass}`}>
+                                <span className="text-white font-bold text-xs">{label}</span>
                               </div>
                               <div>
                                 <div className="flex items-center gap-2">
                                   <span className="text-white font-medium">{symbol}USD</span>
+                                  <span className={textClass || 'text-[#9ca3af]'}>{label}</span>
                                   <span className={`text-xs px-2 py-0.5 rounded ${trade.is_long ? 'bg-[#27c47d]/20 text-[#27c47d]' : 'bg-[#ef4444]/20 text-[#ef4444]'}`}>
                                     {side} {leverage ? `${leverage}x` : ''}
                                   </span>

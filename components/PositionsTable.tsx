@@ -538,6 +538,8 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                 const slPrice = position.stopLoss || null
                 const tpPrice = position.takeProfit || null
                 
+                const { bgClass, label, textClass } = getAssetIcon(position.coin)
+                
                 // Calculate BTC amount if BTC position
                 const btcAmount = position.coin === 'BTC' && position.entryPrice > 0 
                   ? (positionSize / position.entryPrice).toFixed(8)
@@ -551,13 +553,13 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                     {/* Pair */}
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#f7931a] flex items-center justify-center">
-                          <span className="text-white font-bold text-xs">₿</span>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${bgClass}`}>
+                          <span className="text-white font-bold text-xs">{label}</span>
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="text-white font-medium">{position.coin}USD</span>
-                            <span className="text-[#f7931a]">₿</span>
+                            <span className={textClass || 'text-[#9ca3af]'}>{label}</span>
                             <span className="text-[#9ca3af] text-xs">Perp</span>
                           </div>
                           <span className={`text-xs font-medium ${
