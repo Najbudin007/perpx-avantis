@@ -2152,12 +2152,20 @@ export default function HomePage() {
   const { sdk: baseSdk } = useBaseMiniApp()
   
   // Refresh session status when component mounts or when positions change
-  const { positionData, isLoading: positionsLoading, hasStaleData, closePosition, fetchPositions } = usePositions()
+  const { 
+    positionData, 
+    isLoading: positionsLoading, 
+    hasStaleData, 
+    closePosition, 
+    fetchPositions,
+    error: positionsError,
+  } = usePositions()
   
   // 🛑 STABILIZE: Use refs to avoid function dependency
   const fetchPositionsRef = useRef(fetchPositions);
   const refreshBalancesRef = useRef(refreshBalances);
   const refreshSessionStatusRef = useRef(refreshSessionStatus);
+  const lastPositionOpenedRef = useRef<{ count: number; ts: number } | null>(null);
   useEffect(() => {
     fetchPositionsRef.current = fetchPositions;
     refreshBalancesRef.current = refreshBalances;
@@ -2175,10 +2183,19 @@ export default function HomePage() {
     const handlePositionOpened = (event: any) => {
       // Refresh positions when new position opens
       fetchPositionsRef.current?.(true)
-      
-      // Show single toast for position opened
+
       const detail = event?.detail || {}
       const count = detail.count || 1
+
+      // Deduplicate rapid duplicate events (e.g. from multiple sources on mount)
+      const now = Date.now()
+      const last = lastPositionOpenedRef.current
+      if (last && last.count === count && (now - last.ts) < 3000) {
+        return
+      }
+
+      lastPositionOpenedRef.current = { count, ts: now }
+
       addToast({
         type: 'success',
         title: 'Position Opened Successfully',
@@ -2453,7 +2470,7 @@ export default function HomePage() {
         addToast({
           type: 'error',
           title: 'Close Failed',
-          message: `Failed to close ${position.coin}. Please try again.`
+          message: positionsError || `Failed to close ${position.coin}. Please try again.`
         });
       }
     } catch (error) {
@@ -2468,7 +2485,7 @@ export default function HomePage() {
       clearTimeout(cleanupTimer)
       setClosingPositions((prev) => prev.filter((id) => id !== positionId))
     }
-  }, [closePosition, addToast, fetchPositions]);
+  }, [closePosition, addToast, fetchPositions, positionsError]);
   
   // Note: Removed activeSessions fetching - FloatingLiveCard handles session display now
 

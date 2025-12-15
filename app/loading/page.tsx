@@ -11,11 +11,11 @@ export default function LoadingPage() {
   const [loadingText, setLoadingText] = useState("Loading PrepX...")
   const router = useRouter()
   const { isAuthenticated, isLoading: isAuthLoading } = useAuth()
-  const { isBaseContext } = useBaseMiniApp()
+  const { isBaseContext, contextChecked } = useBaseMiniApp()
 
   useEffect(() => {
-    // Wait for auth to finish loading before deciding where to navigate
-    if (isAuthLoading) {
+    // Wait for auth AND Base context detection before deciding where to navigate
+    if (isAuthLoading || !contextChecked) {
       return
     }
 
@@ -29,14 +29,15 @@ export default function LoadingPage() {
       if (hasNavigated) return
       hasNavigated = true
       
-      // Navigate based on authentication status
+      // Navigate based on authentication status and environment
       if (isAuthenticated) {
+        // Authenticated users always go to trading home
         router.push("/home")
-      } else if (!isBaseContext) {
-        // Web mode and not authenticated - redirect to auth page
+      } else if (contextChecked && !isBaseContext) {
+        // Web mode and not authenticated - redirect to web auth page
         router.push("/auth/web")
       } else {
-        // Base context but not authenticated - go to root which will handle Base auth
+        // Base mini-app context (or still determining) - stay in app/root
         router.push("/")
       }
     }
@@ -78,7 +79,7 @@ export default function LoadingPage() {
       }
       clearTimeout(timeoutId)
     }
-  }, [router, isAuthenticated, isAuthLoading, isBaseContext])
+  }, [router, isAuthenticated, isAuthLoading, isBaseContext, contextChecked])
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] flex flex-col items-center justify-center px-6 relative overflow-hidden">

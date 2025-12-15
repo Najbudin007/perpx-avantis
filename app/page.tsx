@@ -10,10 +10,12 @@ import Link from "next/link"
 export default function WelcomePage() {
   const router = useRouter()
   const { isAuthenticated, isLoading } = useAuth()
-  const { isBaseContext } = useBaseMiniApp()
+  const { isBaseContext, contextChecked } = useBaseMiniApp()
 
   useEffect(() => {
-    if (!isLoading) {
+    // Wait until we know whether we're in Base context to avoid
+    // accidentally redirecting mini-app users to the web auth page
+    if (!isLoading && contextChecked) {
       if (isAuthenticated) {
         // User is authenticated, go to home
         router.push('/home')
@@ -24,7 +26,7 @@ export default function WelcomePage() {
         // Base context but not authenticated - wait for Base auth
       }
     }
-  }, [isAuthenticated, isLoading, isBaseContext, router])
+  }, [isAuthenticated, isLoading, isBaseContext, contextChecked, router])
   // Show loading while authenticating
   if (isLoading) {
     return (
@@ -51,7 +53,7 @@ export default function WelcomePage() {
   }
 
   // If not in Base context and not authenticated, redirect will happen in useEffect
-  if (!isBaseContext && !isAuthenticated) {
+  if (contextChecked && !isBaseContext && !isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#0d0d0d] flex flex-col items-center justify-center px-6">
         <div className="text-center space-y-4">

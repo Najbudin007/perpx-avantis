@@ -286,6 +286,7 @@ export function useBaseMiniApp() {
     error,
     sdk: isReady ? sdk : null,
     isBaseContext,
+    contextChecked,
     auth,
     authenticate,
     getBaseAccountAddress,
