@@ -1,6 +1,5 @@
 "use client"
 
-import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth/AuthContext'
 import { useBaseMiniApp } from '@/lib/hooks/useBaseMiniApp'
 
@@ -12,12 +11,6 @@ interface ProtectedRouteProps {
 export function ProtectedRoute({ children, fallback }: ProtectedRouteProps): JSX.Element | null {
   const { isAuthenticated, isLoading } = useAuth()
   const { isBaseContext, isReady, auth } = useBaseMiniApp()
-  const isWebFallbackEnabled = process.env.NEXT_PUBLIC_ENABLE_WEB_MODE !== "false"
-
-  // Allow access to auth pages without authentication
-  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/auth/')) {
-    return <>{children}</>
-  }
 
   // Show loading state
   if (isLoading) {
@@ -46,13 +39,6 @@ export function ProtectedRoute({ children, fallback }: ProtectedRouteProps): JSX
     )
   }
 
-  // Wait for Base SDK to finish initializing before showing web preview message
-  // This prevents showing the message in Farcaster while context is still being detected
-  // Only show web preview if SDK is ready AND we're not in Base context
-  if (isReady && !isBaseContext && isWebFallbackEnabled) {
-    return <>{children}</>
-  }
-
   // If not in Base context (and SDK is ready), show error
   if (isReady && !isBaseContext) {
     return (
@@ -68,13 +54,10 @@ export function ProtectedRoute({ children, fallback }: ProtectedRouteProps): JSX
   }
 
   // If in Base context but not authenticated yet, show loading or error
-  // This allows time for Base SDK authentication to complete
   if (isBaseContext && !isAuthenticated && !isLoading) {
-    // Check if there's an authentication error from the hook
     const hasAuthError = auth?.error;
     
     if (hasAuthError) {
-      // Show error message
       return (
         <div className="min-h-screen bg-[#0d0d0d] flex flex-col items-center justify-center px-6 relative overflow-hidden">
           <div className="absolute inset-0 flex items-center justify-center">

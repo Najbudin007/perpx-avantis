@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { BaseAccountWalletService } from '@/lib/services/BaseAccountWalletService'
-import { WebWalletService } from '@/lib/services/WebWalletService'
 import { verifyTokenAndGetContext } from '@/lib/utils/authHelper'
 
 // Lazy initialization
 function getFarcasterWalletService(): BaseAccountWalletService {
   return new BaseAccountWalletService()
-}
-
-function getWebWalletService(): WebWalletService {
-  return new WebWalletService()
 }
 
 export async function GET(request: NextRequest) {
@@ -23,53 +18,29 @@ export async function GET(request: NextRequest) {
     const token = authHeader.substring(7)
     const authContext = await verifyTokenAndGetContext(token)
     
-    let wallet: { address: string; privateKey: string } | null = null;
-    
-    if (authContext.context === 'farcaster') {
-      if (!authContext.fid) {
-        return NextResponse.json({
-          trades: [],
-          count: 0,
-          error: 'User FID required'
-        })
-      }
-      
-      const farcasterWalletService = getFarcasterWalletService()
-      const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
-      if (farcasterWallet && farcasterWallet.privateKey) {
-        wallet = {
-          address: farcasterWallet.address,
-          privateKey: farcasterWallet.privateKey
-        }
-      }
-    } else {
-      if (!authContext.webUserId) {
-        return NextResponse.json({
-          trades: [],
-          count: 0,
-          error: 'Web user ID required'
-        })
-      }
-      
-      const webWalletService = getWebWalletService()
-      const webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
-      if (webWallet) {
-        const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
-        if (privateKey) {
-          wallet = {
-            address: webWallet.address,
-            privateKey: privateKey
-          }
-        }
-      }
+    // Farcaster users only
+    if (!authContext.fid) {
+      return NextResponse.json({
+        trades: [],
+        count: 0,
+        error: 'User FID required'
+      })
     }
     
-    if (!wallet || !wallet.address) {
+    const farcasterWalletService = getFarcasterWalletService()
+    const farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+    
+    if (!farcasterWallet || !farcasterWallet.privateKey) {
       return NextResponse.json({
         trades: [],
         count: 0,
         error: 'No trading wallet found'
       })
+    }
+    
+    const wallet = {
+      address: farcasterWallet.address,
+      privateKey: farcasterWallet.privateKey
     }
     
     // Call Avantis API directly
@@ -105,7 +76,6 @@ export async function GET(request: NextRequest) {
         clearTimeout(timeoutId)
         
         if (response.status === 404) {
-          // No more pages
           break
         }
         
@@ -113,7 +83,6 @@ export async function GET(request: NextRequest) {
           const errorText = await response.text().catch(() => 'Unknown error')
           console.error(`[API] Trade history error (${response.status}): ${errorText}`)
           if (page === 1) {
-            // If first page fails, return error
             return NextResponse.json({
               trades: [],
               count: 0,
@@ -125,7 +94,6 @@ export async function GET(request: NextRequest) {
         
         const data = await response.json()
         
-        // Extract trades from portfolio array
         const trades = data.portfolio || []
         if (trades.length === 0) {
           break
@@ -133,13 +101,11 @@ export async function GET(request: NextRequest) {
         
         allTrades.push(...trades)
         
-        // Check if there are more pages
         const pageCount = data.pageCount
         if (pageCount && page >= pageCount) {
           break
         }
         
-        // Rate limit: wait 300ms between requests
         await new Promise(resolve => setTimeout(resolve, 300))
         page++
       }
@@ -161,7 +127,6 @@ export async function GET(request: NextRequest) {
         const positionSizeUsdc = args.positionSizeUSDC || 0
         const pnl = tradeItem._grossPnl || 0
         
-        // Handle timestamp
         let timestamp = 0
         if (tradeItem.timeStamp) {
           try {
@@ -173,8 +138,6 @@ export async function GET(request: NextRequest) {
           timestamp = tradeData.timestamp || 0
         }
         
-        // Get symbol from pair_index
-        // Note: Based on API response, pairIndex 0 = ETH, pairIndex 1 = BTC
         const symbolMap: Record<number, string> = {
           0: "ETH",
           1: "BTC",
@@ -195,7 +158,6 @@ export async function GET(request: NextRequest) {
         }
         const symbol = symbolMap[pairIndex] || `PAIR-${pairIndex}`
         
-        // Format date
         const date = timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : ""
         
         return {
@@ -224,7 +186,6 @@ export async function GET(request: NextRequest) {
         }
       })
       
-      // Sort by timestamp descending (most recent first)
       normalizedTrades.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
       
       console.log(`[API] Trade history - Success: ${normalizedTrades.length} trades found`)

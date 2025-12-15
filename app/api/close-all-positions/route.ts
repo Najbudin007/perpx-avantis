@@ -1,16 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyTokenAndGetContext } from '@/lib/utils/authHelper'
 import { BaseAccountWalletService } from '@/lib/services/BaseAccountWalletService'
-import { WebWalletService } from '@/lib/services/WebWalletService'
 import { AvantisClient } from '@/lib/services/AvantisClient'
 
 // Lazy initialization - create services at runtime, not build time
 function getFarcasterWalletService(): BaseAccountWalletService {
   return new BaseAccountWalletService()
-}
-
-function getWebWalletService(): WebWalletService {
-  return new WebWalletService()
 }
 
 export async function POST(request: NextRequest) {
@@ -26,92 +21,37 @@ export async function POST(request: NextRequest) {
     const token = authHeader.substring(7)
     const authContext = await verifyTokenAndGetContext(token)
 
-    // Get user's wallet based on context
-    let wallet: { address: string; privateKey: string } | null = null
-    let userId: string | number
-    
-    if (authContext.context === 'farcaster') {
-      // Farcaster user
-      if (!authContext.fid) {
-        return NextResponse.json(
-          { error: 'Base Account (FID) required' },
-          { status: 400 }
-        )
-      }
-      
-      userId = authContext.fid
-      const farcasterWalletService = getFarcasterWalletService()
-      // CRITICAL: Use getWalletWithKey() first to get existing wallet, only create if missing
-      // This ensures we always use the SAME wallet address (prevents inconsistency)
-      let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
-      
-      if (!farcasterWallet || !farcasterWallet.privateKey) {
-        // Wallet doesn't exist or has no private key - create it (only for first-time users)
-        console.log(`[CloseAllPositions] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
-        farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
-      }
-      
-      if (!farcasterWallet || !farcasterWallet.privateKey) {
-        console.error(`[CloseAllPositions] Failed to get/create trading wallet for FID ${authContext.fid}`)
-        return NextResponse.json({ 
-          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
-        }, { status: 404 })
-      }
-      
-      console.log(`[CloseAllPositions] ✅ Using trading wallet: ${farcasterWallet.address} for FID: ${authContext.fid}`)
-      
-      wallet = {
-        address: farcasterWallet.address,
-        privateKey: farcasterWallet.privateKey
-      }
-    } else {
-      // Web user
-      if (!authContext.webUserId) {
-        return NextResponse.json(
-          { error: 'Web user ID required' },
-          { status: 400 }
-        )
-      }
-      
-      userId = authContext.webUserId
-      const webWalletService = getWebWalletService()
-      // CRITICAL: Get existing wallet first to ensure consistency (same pattern as Farcaster)
-      let webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
-      
-      if (!webWallet) {
-        // Wallet doesn't exist - create it (only for first-time users)
-        console.log(`[CloseAllPositions] ⚠️ No existing trading wallet found for web user ${authContext.webUserId}, creating one...`)
-        webWallet = await webWalletService.ensureTradingWallet(authContext.webUserId)
-      }
-      
-      if (!webWallet) {
-        return NextResponse.json({ 
-          error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
-        }, { status: 404 })
-      }
-      
-      const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
-      if (!privateKey) {
-        console.error(`[CloseAllPositions] Failed to get private key for web user ${authContext.webUserId}`)
-        return NextResponse.json({ 
-          error: 'Wallet private key not available. Please ensure your trading wallet is properly set up.' 
-        }, { status: 404 })
-      }
-      
-      wallet = {
-        address: webWallet.address,
-        privateKey: privateKey
-      }
-      console.log(`[CloseAllPositions] ✅ Using trading wallet: ${wallet.address} for web user: ${authContext.webUserId}`)
+    // Farcaster users only
+    if (!authContext.fid) {
+      return NextResponse.json(
+        { error: 'Base Account (FID) required' },
+        { status: 400 }
+      )
     }
-
-    if (!wallet || !wallet.privateKey) {
+    
+    const farcasterWalletService = getFarcasterWalletService()
+    let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+    
+    if (!farcasterWallet || !farcasterWallet.privateKey) {
+      console.log(`[CloseAllPositions] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
+      farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+    }
+    
+    if (!farcasterWallet || !farcasterWallet.privateKey) {
+      console.error(`[CloseAllPositions] Failed to get/create trading wallet for FID ${authContext.fid}`)
       return NextResponse.json({ 
-        error: 'No wallet found with private key' 
+        error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
       }, { status: 404 })
     }
+    
+    console.log(`[CloseAllPositions] ✅ Using trading wallet: ${farcasterWallet.address} for FID: ${authContext.fid}`)
+    
+    const wallet = {
+      address: farcasterWallet.address,
+      privateKey: farcasterWallet.privateKey
+    }
 
-    console.log(`[CloseAllPositions] Closing all positions for ${authContext.context} user:`, userId)
+    console.log(`[CloseAllPositions] Closing all positions for FID: ${authContext.fid}`)
 
     // Use AvantisClient to call backend FastAPI directly
     const avantisApiUrl = process.env.NEXT_PUBLIC_AVANTIS_API_URL || 'http://localhost:8000'

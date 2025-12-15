@@ -17,7 +17,6 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { BalanceSkeleton, CardSkeleton, LoadingState, RefreshIndicator, TradeSkeleton } from "@/components/ui/loading-skeleton"
 import { NavigationHeader } from "@/components/NavigationHeader"
 import { DepositModal } from "@/components/DepositModal"
-import { WalletConnectionModal } from "@/components/WalletConnectionModal"
 import { WithdrawModal } from "@/components/WithdrawModal"
 import { BuildTimestamp } from "@/components/BuildTimestamp"
 import { PositionsTable } from "@/components/PositionsTable"
@@ -514,11 +513,8 @@ const TradingCard = ({
     setIsTrading(true)
     
     try {
-      addToast({
-        type: 'info',
-        title: 'Starting Trading',
-        message: 'Initializing trading session...'
-      })
+      // Reduced toast messages - only show Live Trading Activity card
+      // No toast for "Starting Trading" - just show the card
       
       // Start trading session with progress callbacks
       await startTradingSession({
@@ -527,37 +523,27 @@ const TradingCard = ({
         targetProfit: profitNum,
         maxPerSession: parseInt(maxPositions) || 1,
         lossThreshold: parseFloat(lossThreshold) || 10,
-        // Pass wallet details so backend doesn’t reject
+        // Pass wallet details so backend doesn't reject
         walletAddress: tradingWalletAddress || baseAccountAddress || primaryWallet?.address || ''
       } as any, (step: string, message: string) => {
         try {
-          // Show progress updates via toast with error handling
-          if (step === 'fee') {
-            addToast({
-              type: 'info',
-              title: 'Processing Fee',
-              message: message
-            })
-          } else if (step === 'session') {
-            addToast({
-              type: 'info',
-              title: 'Starting Session',
-              message: message
-            })
-          } else if (step === 'complete') {
+          // Minimal toasts - only show session started (not fee/progress updates)
+          // User can see all details in Live Trading Activity card
+          if (step === 'complete') {
             // Use setTimeout to ensure toast doesn't crash the app
             setTimeout(() => {
               try {
                 addToast({
                   type: 'success',
                   title: 'Trading Started',
-                  message: 'Your trading session is now active!'
+                  message: 'Your trading session is now active! Check Live Trading Activity for details.'
                 })
               } catch (toastError) {
                 console.error('Error showing success toast:', toastError)
               }
             }, 100)
           }
+          // No toast for 'fee' or 'session' - user sees Live Trading Activity card
         } catch (progressError) {
           console.error('Error in progress callback:', progressError)
           // Don't throw - just log the error
@@ -1109,7 +1095,6 @@ const WalletInfoCard = ({
   const [isFetching, setIsFetching] = useState(false)
   const [hasAttemptedFetch, setHasAttemptedFetch] = useState(false) // Track if we've already tried fetching
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false)
-  const [isWalletConnectionModalOpen, setIsWalletConnectionModalOpen] = useState(false)
   
   // Check if we're in Farcaster mini-app or web version
   const { isBaseContext, sdk: baseSdk } = useBaseMiniApp()
@@ -1468,13 +1453,7 @@ const WalletInfoCard = ({
             {walletToDisplay.address && (
               <Button
                 onClick={() => {
-                  // In web version, show wallet connection modal
-                  // In Farcaster mini-app, show deposit modal
-                  if (isBaseContext) {
-                    setIsDepositModalOpen(true)
-                  } else {
-                    setIsWalletConnectionModalOpen(true)
-                  }
+                  setIsDepositModalOpen(true)
                 }}
                 className="w-full bg-[#8759ff] hover:bg-[#7c4dff] text-white font-medium py-2.5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200"
               >
@@ -1490,29 +1469,19 @@ const WalletInfoCard = ({
         </div>
       </div>
 
-      {/* Deposit Modal - Only show in Farcaster mini-app */}
-      {isBaseContext && (
-        <DepositModal
-          isOpen={isDepositModalOpen}
-          onClose={() => setIsDepositModalOpen(false)}
-          onDeposit={onDeposit}
-          isDepositing={isDepositing}
-          depositError={depositError}
-          recentDepositHash={recentDepositHash}
-          baseAccountAddress={baseAccountAddress || null}
-          tradingWalletAddress={tradingWalletAddress || null}
-          holdings={holdings}
-          ethBalance={ethBalanceFormatted}
-        />
-      )}
-      
-      {/* Wallet Connection Modal - Only show in web version */}
-      {!isBaseContext && (
-        <WalletConnectionModal
-          isOpen={isWalletConnectionModalOpen}
-          onClose={() => setIsWalletConnectionModalOpen(false)}
-        />
-      )}
+      {/* Deposit Modal */}
+      <DepositModal
+        isOpen={isDepositModalOpen}
+        onClose={() => setIsDepositModalOpen(false)}
+        onDeposit={onDeposit}
+        isDepositing={isDepositing}
+        depositError={depositError}
+        recentDepositHash={recentDepositHash}
+        baseAccountAddress={baseAccountAddress || null}
+        tradingWalletAddress={tradingWalletAddress || null}
+        holdings={holdings}
+        ethBalance={ethBalanceFormatted}
+      />
     </Card>
   )
 }
@@ -2158,9 +2127,18 @@ export default function HomePage() {
       fetchPositionsRef.current?.(true)
     }
     
-    const handlePositionOpened = () => {
+    const handlePositionOpened = (event: any) => {
       // Refresh positions when new position opens
       fetchPositionsRef.current?.(true)
+      
+      // Show single toast for position opened
+      const detail = event?.detail || {}
+      const count = detail.count || 1
+      addToast({
+        type: 'success',
+        title: 'Position Opened Successfully',
+        message: `Position opened! You now have ${count} active position${count > 1 ? 's' : ''}. Check the positions table for details.`
+      })
     }
     
     const handlePositionUpdated = () => {
@@ -2439,26 +2417,15 @@ export default function HomePage() {
   
   // Note: Removed activeSessions fetching - FloatingLiveCard handles session display now
 
-  // Auto-create wallet if user doesn't have one - optimized with useCallback
-  // NOTE: For web users, wallet is created during OTP verification, so this is mainly for Farcaster users
+  // Auto-create wallet if user doesn't have one
   useEffect(() => {
     // Only create wallet if:
-    // 1. User is logged in (Farcaster only - web users get wallet during auth)
+    // 1. User is logged in (Farcaster)
     // 2. Not currently loading
     // 3. No primary wallet is connected
     // 4. No wallets exist for this user
     // 5. Not already creating a wallet (prevent multiple simultaneous calls)
-    // 6. User is Farcaster (web users already have wallet from OTP verification)
-    // 7. For web users, if no wallet is loaded after 2 seconds, try refreshing (wallet should exist)
-    if (user?.webUserId && !isLoading && !primaryWallet && allWallets && allWallets.length === 0) {
-      // Web user - wallet should already exist, try refreshing after a delay
-      const timer = setTimeout(() => {
-        refreshWallets().catch(() => {
-          // Wallet refresh error
-        });
-      }, 2000);
-      return () => clearTimeout(timer);
-    } else if (user?.fid && !user?.webUserId && !isLoading && !primaryWallet && allWallets && allWallets.length === 0 && !error) {
+    if (user?.fid && !isLoading && !primaryWallet && allWallets && allWallets.length === 0 && !error) {
       // Farcaster user - create wallet if needed
       const timer = setTimeout(() => {
         createWallet('ethereum').catch(() => {
@@ -2467,7 +2434,7 @@ export default function HomePage() {
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [user?.fid, user?.webUserId, isLoading, primaryWallet, allWallets, createWallet, refreshWallets, error])
+  }, [user?.fid, isLoading, primaryWallet, allWallets, createWallet, error])
 
 
   const handleDeposit = useCallback(
@@ -2964,8 +2931,8 @@ export default function HomePage() {
           actions={
             isConnected && hasCompletedInitialLoad ? (
               <div className="flex items-center gap-2">
-                {/* Withdraw Button - shown for Farcaster users with balance */}
-                {!user?.webUserId && avantisBalance > 0 && (
+                {/* Withdraw Button - shown for users with balance */}
+                {avantisBalance > 0 && (
                   <Button
                     onClick={() => setIsWithdrawModalOpen(true)}
                     className="bg-[#8759ff] hover:bg-[#7c4dff] text-white px-3 py-2 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 flex items-center gap-1.5 text-sm font-medium"
@@ -2977,8 +2944,8 @@ export default function HomePage() {
                   </Button>
                 )}
                 
-                {/* Show BuildTimestamp for web users or when no balance */}
-                {(user?.webUserId || avantisBalance === 0) && <BuildTimestamp />}
+                {/* Show BuildTimestamp when no balance */}
+                {avantisBalance === 0 && <BuildTimestamp />}
                 
                 <Button
                   onClick={async () => {

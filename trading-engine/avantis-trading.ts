@@ -228,6 +228,22 @@ async function getAvantisBalance(privateKey: string): Promise<number> {
  * Check if error is transient (retryable) or permanent (don't retry)
  */
 function isTransientError(error: string): boolean {
+  // Balance errors are PERMANENT - never retry on insufficient balance
+  const permanentPatterns = [
+    'transfer amount exceeds balance',
+    'erc20: transfer amount exceeds balance',
+    'insufficient balance',
+    'balance',
+    'below minimum',
+    'below_min_pos',
+    'min position'
+  ];
+
+  const errorLower = error.toLowerCase();
+  if (permanentPatterns.some(pattern => errorLower.includes(pattern))) {
+    return false; // Permanent error - don't retry
+  }
+
   const transientPatterns = [
     'timeout',
     'network',
@@ -239,7 +255,6 @@ function isTransientError(error: string): boolean {
     'too many requests'
   ];
 
-  const errorLower = error.toLowerCase();
   return transientPatterns.some(pattern => errorLower.includes(pattern));
 }
 
@@ -419,9 +434,10 @@ export async function openAvantisPosition(
       const randomDelay = Math.random() * 500; // 0-500ms random delay
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
-      // Balance validation before opening (non-blocking, fast check)
+      // Balance validation before opening (CRITICAL: Check balance AFTER accounting for existing positions)
       if (!skipBalanceCheck) {
         try {
+          // Get current balance
           const balance = await Promise.race([
             getAvantisBalance(params.private_key),
             new Promise<number>((_, reject) => 
@@ -429,17 +445,51 @@ export async function openAvantisPosition(
             )
           ]);
 
-          if (balance < params.collateral) {
-            console.error(`[AVANTIS] ❌ Insufficient balance: $${balance.toFixed(2)} < $${params.collateral}`);
+          // Get existing positions to calculate reserved collateral
+          let reservedCollateral = 0;
+          try {
+            const existingPositions = await getAvantisPositions(params.private_key);
+            reservedCollateral = existingPositions.reduce((sum, pos) => {
+              // Use collateral from position (or estimate from position_size / leverage)
+              const posCollateral = pos.collateral || (pos.position_size ? pos.position_size / pos.leverage : 0);
+              return sum + posCollateral;
+            }, 0);
+            
+            if (existingPositions.length > 0) {
+              console.log(`[AVANTIS] 📊 Found ${existingPositions.length} existing position(s) with $${reservedCollateral.toFixed(2)} reserved collateral`);
+            }
+          } catch (posError) {
+            console.warn(`[AVANTIS] ⚠️ Could not fetch existing positions for balance check:`, posError);
+            // Continue with balance check anyway - better to be conservative
+          }
+
+          // Calculate available balance (total - reserved)
+          const availableBalance = balance - reservedCollateral;
+          
+          // Add small buffer for gas fees (0.1 USDC)
+          const requiredAmount = params.collateral + 0.1;
+
+          if (availableBalance < requiredAmount) {
+            console.error(`[AVANTIS] ❌ Insufficient available balance:`);
+            console.error(`[AVANTIS]    Total balance: $${balance.toFixed(2)}`);
+            console.error(`[AVANTIS]    Reserved (existing positions): $${reservedCollateral.toFixed(2)}`);
+            console.error(`[AVANTIS]    Available: $${availableBalance.toFixed(2)}`);
+            console.error(`[AVANTIS]    Required: $${requiredAmount.toFixed(2)} (collateral + gas)`);
             return {
               success: false,
-              error: `Insufficient balance: $${balance.toFixed(2)} available, $${params.collateral} required`
+              error: `Insufficient available balance: $${availableBalance.toFixed(2)} available ($${balance.toFixed(2)} total - $${reservedCollateral.toFixed(2)} reserved), $${requiredAmount.toFixed(2)} required`
             };
           }
-          console.log(`[AVANTIS] ✅ Balance check passed: $${balance.toFixed(2)} >= $${params.collateral}`);
+          console.log(`[AVANTIS] ✅ Balance check passed:`);
+          console.log(`[AVANTIS]    Total: $${balance.toFixed(2)} | Reserved: $${reservedCollateral.toFixed(2)} | Available: $${availableBalance.toFixed(2)} >= Required: $${requiredAmount.toFixed(2)}`);
         } catch (balanceError) {
-          // Don't fail on balance check error - might be API issue
-          console.warn(`[AVANTIS] ⚠️ Balance check failed, continuing anyway:`, balanceError);
+          // Balance check failed - this is a critical error, don't proceed
+          const errorMessage = balanceError instanceof Error ? balanceError.message : String(balanceError);
+          console.error(`[AVANTIS] ❌ Balance check failed: ${errorMessage}`);
+          return {
+            success: false,
+            error: `Balance check failed: ${errorMessage}. Cannot open position without balance verification.`
+          };
         }
       }
 
@@ -573,6 +623,21 @@ export async function openAvantisPosition(
         
         console.error(`[AVANTIS] ❌ Failed to open position: ${errorMessage}`);
       console.error(`[AVANTIS] Response status: ${response.status}`);
+
+        // Check if error is a balance error - these are permanent and should never retry
+        const errorLower = errorMessage.toLowerCase();
+        const isBalanceError = errorLower.includes('transfer amount exceeds balance') ||
+                              errorLower.includes('insufficient balance') ||
+                              errorLower.includes('erc20: transfer amount exceeds balance') ||
+                              errorLower.includes('balance');
+        if (isBalanceError) {
+          console.error(`[AVANTIS] 🛑 Balance error detected - will NOT retry`);
+          console.error(`[AVANTIS]    This is a permanent error - insufficient funds`);
+          return {
+            success: false,
+            error: errorMessage
+          };
+        }
 
         // Check if error is transient and we should retry
         if (isTransientError(errorMessage) && attempt < maxRetries) {
@@ -809,6 +874,7 @@ export async function getAvantisPositions(privateKey: string): Promise<Array<{
   symbol: string;
   is_long: boolean;
   collateral: number;
+  position_size?: number; // Leveraged position size (collateral * leverage)
   leverage: number;
   entry_price: number;
   current_price: number;

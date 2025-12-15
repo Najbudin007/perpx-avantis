@@ -5,9 +5,8 @@ import { useBaseMiniApp } from '@/lib/hooks/useBaseMiniApp'
 
 interface User {
   id: string
-  fid: number // Farcaster ID for Base Account (0 for web users)
-  webUserId?: number // Web user ID (for web users)
-  baseAccountAddress: string | null // User's Base Account address or trading wallet address
+  fid: number // Farcaster ID for Base Account
+  baseAccountAddress: string | null // User's Base Account address
   hasWallet: boolean
   createdAt: Date
 }
@@ -41,82 +40,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [token, setToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const { isBaseContext, authenticate: authenticateBase, isReady: baseReady } = useBaseMiniApp()
-  
-  // Get web fallback setting at runtime (client-side)
-  // Use a function to ensure it's evaluated at runtime, not build time
-  const getIsWebFallbackEnabled = () => {
-    if (typeof window !== 'undefined') {
-      // Client-side: try to get from runtime config or fallback to env
-      return (window as any).__RUNTIME_CONFIG__?.NEXT_PUBLIC_ENABLE_WEB_MODE !== "false" ||
-             process.env.NEXT_PUBLIC_ENABLE_WEB_MODE !== "false"
-    }
-    // Server-side: read from process.env at runtime
-    return process.env.NEXT_PUBLIC_ENABLE_WEB_MODE !== "false"
-  }
-  
-  const isWebFallbackEnabled = getIsWebFallbackEnabled()
 
   const isAuthenticated = !!user
 
   useEffect(() => {
-    // Only authenticate if in Base context
     const checkAuth = async () => {
+      // Only authenticate if in Base context
       if (!isBaseContext) {
-        if (isWebFallbackEnabled) {
-          // Check for existing session in localStorage first
-          if (typeof window !== 'undefined') {
-            const storedToken = localStorage.getItem('web_auth_token');
-            const storedUser = localStorage.getItem('web_user');
-
-            if (storedToken && storedUser) {
-              try {
-                // Verify token is still valid by checking user info
-                const baseUrl = window.location.origin;
-                const response = await fetch(`${baseUrl}/api/auth/web`, {
-                  method: 'GET',
-                  headers: {
-                    'Authorization': `Bearer ${storedToken}`,
-                  },
-                });
-
-                if (response.ok) {
-                  const data = await response.json();
-                  if (data.success && data.user) {
-                    const webUser: User = {
-                      id: `web_${data.user.id}`,
-                      fid: 0,
-                      webUserId: data.user.id,
-                      baseAccountAddress: data.wallet?.address || null,
-                      hasWallet: !!data.wallet,
-                      createdAt: new Date(data.user.created_at),
-                    };
-
-                    setToken(storedToken);
-                    setUser(webUser);
-                    console.log('✅ Restored web session, User ID:', data.user.id);
-                    setIsLoading(false);
-                    return;
-                  }
-                }
-              } catch (error) {
-                console.error('Failed to verify stored token:', error);
-                // Clear invalid session
-                localStorage.removeItem('web_auth_token');
-                localStorage.removeItem('web_user');
-              }
-            }
-          }
-
-          // No valid session found - redirect to auth page
-          console.log('🌐 Web mode detected, no session found. Redirecting to auth...');
-          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/web')) {
-            window.location.href = '/auth/web';
-          }
-        } else {
-          console.warn('⚠️ App is not running in Base app context. Base Account is required.')
-          setToken(previous => (previous === null ? previous : null))
-          setUser(previous => (previous === null ? previous : null))
-        }
+        console.warn('⚠️ App is not running in Base app context. Base Account is required.')
+        setToken(null)
+        setUser(null)
         setIsLoading(false)
         return
       }
@@ -127,7 +60,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return
       }
 
-      // Attempt to restore existing Base session from localStorage (Farcaster)
+      // Attempt to restore existing Base session from localStorage
       if (typeof window !== 'undefined') {
         const storedBaseToken = localStorage.getItem('base_auth_token')
         const storedBaseUser = localStorage.getItem('base_user')
@@ -167,8 +100,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
           const baseUser: User = {
             id: `fid_${baseAuth.fid}`,
             fid: baseAuth.fid,
-            baseAccountAddress: baseAuth.address || null, // User's Base Account address
-            hasWallet: !!baseAuth.address, // Has wallet if we have an address
+            baseAccountAddress: baseAuth.address || null,
+            hasWallet: !!baseAuth.address,
             createdAt: new Date(),
           }
           
@@ -181,7 +114,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
           console.log('✅ Base Account authentication successful, FID:', baseAuth.fid, 'Address:', baseAuth.address)
         } else {
           console.error('❌ Base Account authentication failed - authenticateBase returned null')
-          // Set error state so user can see what went wrong
           setToken(null)
           setUser(null)
         }
@@ -191,7 +123,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
         if (error instanceof Error) {
           console.error('Error stack:', error.stack)
         }
-        // Log the error for debugging
         if (typeof window !== 'undefined') {
           console.error('Full error object:', error)
         }
@@ -203,30 +134,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
 
     checkAuth()
-  }, [isBaseContext, baseReady, authenticateBase, isWebFallbackEnabled])
+  }, [isBaseContext, baseReady, authenticateBase])
 
   const login = (token: string, userData: User) => {
     console.log('🔐 Login called, setting user FID:', userData.fid)
     setToken(token)
     setUser(userData)
     if (typeof window !== 'undefined') {
-      if (userData.fid && userData.fid > 0) {
-        localStorage.setItem('base_auth_token', token)
-        localStorage.setItem('base_user', JSON.stringify(userData))
-      } else {
-        localStorage.setItem('web_auth_token', token)
-        localStorage.setItem('web_user', JSON.stringify(userData))
-      }
+      localStorage.setItem('base_auth_token', token)
+      localStorage.setItem('base_user', JSON.stringify(userData))
     }
   }
 
   const logout = () => {
     setToken(null)
     setUser(null)
-    // Clear web session from localStorage
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('web_auth_token')
-      localStorage.removeItem('web_user')
       localStorage.removeItem('base_auth_token')
       localStorage.removeItem('base_user')
     }

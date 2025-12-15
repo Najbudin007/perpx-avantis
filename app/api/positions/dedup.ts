@@ -41,7 +41,6 @@ export async function deduplicateRequest<T>(
   // Check if we have cached data (not expired) - use this first to avoid ReadableStream issues
   const cached = cachedData.get(key);
   if (cached && (now - cached.timestamp) < CACHE_TTL) {
-    console.log(`[DEDUP] Using cached data for key: ${key.substring(0, 20)}...`);
     // Create a new NextResponse from cached data to avoid ReadableStream locked error
     return NextResponse.json(cached.data) as T;
   }
@@ -49,22 +48,19 @@ export async function deduplicateRequest<T>(
   // Check if there's already a pending request for this key
   const existing = pendingRequests.get(key);
   if (existing && (now - existing.timestamp) < REQUEST_TIMEOUT) {
-    console.log(`[DEDUP] Reusing existing request for key: ${key.substring(0, 20)}...`);
     // Wait for the existing request - it now resolves to data, not response
     try {
       const data = await existing.promise;
       
-      // The promise now resolves to data directly, so we can safely create a new response
-      // Cache it if not already cached (should be cached, but just in case)
+      // Cache it if not already cached
       if (!cachedData.has(key)) {
         cachedData.set(key, { data, timestamp: Date.now() });
       }
       
       // Create a new NextResponse from the data for this consumer
       return NextResponse.json(data) as T;
-    } catch (error) {
+    } catch {
       // If existing request failed, remove it and create new one
-      console.error(`[DEDUP] Error reusing existing request: ${error}`);
       pendingRequests.delete(key);
       // Fall through to create new request
     }

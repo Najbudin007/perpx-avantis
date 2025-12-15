@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyTokenAndGetContext } from '@/lib/utils/authHelper'
 import { BaseAccountWalletService } from '@/lib/services/BaseAccountWalletService'
-import { WebWalletService } from '@/lib/services/WebWalletService'
 
 // Lazy initialization
 function getFarcasterWalletService(): BaseAccountWalletService {
   return new BaseAccountWalletService()
-}
-
-function getWebWalletService(): WebWalletService {
-  return new WebWalletService()
 }
 
 export async function POST(request: NextRequest) {
@@ -23,75 +18,31 @@ export async function POST(request: NextRequest) {
     const token = authHeader.substring(7)
     const authContext = await verifyTokenAndGetContext(token)
     
-    let wallet: { address: string; privateKey: string } | null = null
-    
-    if (authContext.context === 'farcaster') {
-      // Farcaster user
-      if (!authContext.fid) {
-        return NextResponse.json({ error: 'User FID required' }, { status: 400 })
-      }
-      
-      const farcasterWalletService = getFarcasterWalletService()
-      // CRITICAL: Use getWalletWithKey() first to get existing wallet, only create if missing
-      // This ensures we always use the SAME wallet address (prevents inconsistency)
-      let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
-      
-      if (!farcasterWallet || !farcasterWallet.privateKey) {
-        // Wallet doesn't exist or has no private key - create it (only for first-time users)
-        console.log(`[UpdateTP/SL] ⚠️ No existing trading wallet found for FID ${authContext.fid}, creating one...`)
-        farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
-      }
-      
-      if (farcasterWallet && farcasterWallet.privateKey) {
-        wallet = {
-          address: farcasterWallet.address,
-          privateKey: farcasterWallet.privateKey
-        }
-        console.log(`[UpdateTP/SL] ✅ Using trading wallet: ${wallet.address} for FID: ${authContext.fid}`)
-      } else {
-        console.error(`[UpdateTP/SL] Failed to get/create trading wallet for FID ${authContext.fid}`)
-      }
-    } else {
-      // Web user
-      if (!authContext.webUserId) {
-        return NextResponse.json({ error: 'Web user ID required' }, { status: 400 })
-      }
-      
-      const webWalletService = getWebWalletService()
-      // CRITICAL: Get existing wallet first to ensure consistency (same pattern as Farcaster)
-      let webWallet = await webWalletService.getWallet(authContext.webUserId, 'ethereum')
-      
-      if (!webWallet) {
-        // Wallet doesn't exist - create it (only for first-time users)
-        console.log(`[UpdateTP/SL] ⚠️ No existing trading wallet found for web user ${authContext.webUserId}, creating one...`)
-        webWallet = await webWalletService.ensureTradingWallet(authContext.webUserId)
-      }
-      
-      if (webWallet) {
-        const privateKey = await webWalletService.getPrivateKey(authContext.webUserId, 'ethereum')
-        if (privateKey) {
-          wallet = {
-            address: webWallet.address,
-            privateKey: privateKey
-          }
-          console.log(`[UpdateTP/SL] ✅ Using trading wallet: ${wallet.address} for web user: ${authContext.webUserId}`)
-        } else {
-          console.error(`[UpdateTP/SL] Failed to get private key for web user ${authContext.webUserId}`)
-        }
-      } else {
-        console.error(`[UpdateTP/SL] Failed to get/create trading wallet for web user ${authContext.webUserId}`)
-      }
+    // Farcaster users only
+    if (!authContext.fid) {
+      return NextResponse.json({ error: 'User FID required' }, { status: 400 })
     }
     
-    if (!wallet || !wallet.privateKey) {
+    const farcasterWalletService = getFarcasterWalletService()
+    let farcasterWallet = await farcasterWalletService.getWalletWithKey(authContext.fid, 'ethereum')
+    
+    if (!farcasterWallet || !farcasterWallet.privateKey) {
+      farcasterWallet = await farcasterWalletService.ensureTradingWallet(authContext.fid)
+    }
+    
+    if (!farcasterWallet || !farcasterWallet.privateKey) {
       return NextResponse.json({ 
         error: 'No trading wallet found. Please ensure your trading wallet is properly set up.' 
       }, { status: 400 })
     }
     
+    const wallet = {
+      address: farcasterWallet.address,
+      privateKey: farcasterWallet.privateKey
+    }
+    
     const body = await request.json()
     const { pair_index, new_tp, new_sl } = body
-    
     
     if (pair_index === undefined || pair_index === null) {
       return NextResponse.json({ error: 'pair_index is required' }, { status: 400 })
@@ -107,7 +58,7 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         pair_index: pair_index,
-        trade_index: 0, // Default to first trade index
+        trade_index: 0,
         new_tp: new_tp,
         new_sl: new_sl,
         private_key: wallet.privateKey
@@ -116,9 +67,7 @@ export async function POST(request: NextRequest) {
     
     if (!avantisResponse.ok) {
       const errorData = await avantisResponse.json().catch(() => ({ detail: 'Failed to update TP/SL' }))
-      console.error('[API] Avantis error:', errorData)
       
-      // Provide more detailed error message for all users (especially Farcaster)
       let userFriendlyError = errorData.detail || 'Failed to update TP/SL'
       if (userFriendlyError.includes('No open trade found') || userFriendlyError.includes('No open position')) {
         userFriendlyError = 'Position not found. It may have been closed.'

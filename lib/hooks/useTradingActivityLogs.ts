@@ -23,7 +23,8 @@ export interface TradingActivityLog {
   }
 }
 
-const SYMBOLS = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'ARB', 'OP', 'LINK']
+// Actual Avantis trading symbols on Base network
+const SYMBOLS = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'ARB', 'OP', 'LINK', 'UNI', 'AAVE', 'ATOM', 'DOT', 'ADA', 'XRP', 'DOGE', 'BNB']
 const INDICATORS = ['RSI', 'MACD', 'EMA', 'ATR', 'ADX', 'Volume', 'Divergence']
 
 export function useTradingActivityLogs() {
@@ -33,6 +34,7 @@ export function useTradingActivityLogs() {
   const [logs, setLogs] = useState<TradingActivityLog[]>([])
   const [cycleCount, setCycleCount] = useState(0)
   const [lastPositionCount, setLastPositionCount] = useState(0)
+  const [useRealLogs, setUseRealLogs] = useState(true) // Toggle to use real logs from API
 
   // Generate realistic trading activity logs
   const generateActivityLogs = useCallback(() => {
@@ -259,11 +261,51 @@ export function useTradingActivityLogs() {
     return newLogs
   }, [tradingSession, positionData, cycleCount, lastPositionCount, avantisBalance, feePending, feePaidTime])
 
-  // Update logs periodically when session is running
+  // Fetch real logs from trading engine API
   useEffect(() => {
-    if (!tradingSession || tradingSession.status !== 'running') {
-      setLogs([])
-      setCycleCount(0)
+    if (!tradingSession || tradingSession.status !== 'running' || !useRealLogs) {
+      return
+    }
+
+    const fetchRealLogs = async () => {
+      try {
+        const sessionId = tradingSession.sessionId || tradingSession.id
+        const response = await fetch(`/api/trading/logs?limit=100${sessionId ? `&sessionId=${sessionId}` : ''}`)
+        
+        if (response.ok) {
+          const data = await response.json()
+          if (data.logs && data.logs.length > 0) {
+            // Convert timestamp strings to Date objects
+            const parsedLogs = data.logs.map((log: any) => ({
+              ...log,
+              timestamp: new Date(log.timestamp)
+            }))
+            setLogs(parsedLogs)
+          }
+        }
+      } catch (error) {
+        console.error('[useTradingActivityLogs] Error fetching real logs:', error)
+        // Fall back to generated logs if API fails
+        setUseRealLogs(false)
+      }
+    }
+
+    // Fetch immediately
+    fetchRealLogs()
+
+    // Then fetch every 5 seconds for real-time updates
+    const interval = setInterval(fetchRealLogs, 5000)
+
+    return () => clearInterval(interval)
+  }, [tradingSession, useRealLogs])
+
+  // Update logs periodically when session is running (FALLBACK - mock logs)
+  useEffect(() => {
+    if (!tradingSession || tradingSession.status !== 'running' || useRealLogs) {
+      if (!useRealLogs) {
+        setLogs([])
+        setCycleCount(0)
+      }
       return
     }
 
@@ -302,7 +344,7 @@ export function useTradingActivityLogs() {
       clearTimeout(firstBatchTimeout)
       clearInterval(interval)
     }
-  }, [tradingSession, generateActivityLogs, positionData, feePending, feePaidTime])
+  }, [tradingSession, generateActivityLogs, positionData, feePending, feePaidTime, useRealLogs])
 
   // Generate immediate logs when positions change
   useEffect(() => {

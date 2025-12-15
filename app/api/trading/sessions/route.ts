@@ -11,11 +11,11 @@ export async function GET(request: NextRequest) {
 
     const token = authHeader.substring(7)
     
-    // Verify token (supports both Farcaster and Web users)
+    // Verify Farcaster token
     let authContext;
     try {
       authContext = await verifyTokenAndGetContext(token)
-      console.log(`[API] Verified ${authContext.context} user:`, authContext.context === 'farcaster' ? `FID ${authContext.fid}` : `WebUserId ${authContext.webUserId}`)
+      console.log(`[API] Verified Farcaster user, FID: ${authContext.fid}`)
     } catch (authError) {
       console.error('[API] Token verification failed:', authError)
       return NextResponse.json(
@@ -24,16 +24,17 @@ export async function GET(request: NextRequest) {
       )
     }
     
-    // Call the trading engine to get sessions
+    // Call the trading engine to get sessions filtered by user FID
     const tradingEngineUrl = process.env.TRADING_ENGINE_URL || 'http://localhost:3001'
     
     try {
-      const response = await fetch(`${tradingEngineUrl}/api/trading/sessions`, {
+      // Filter sessions by userFid to ensure multi-user isolation
+      const userFid = authContext.fid
+      const response = await fetch(`${tradingEngineUrl}/api/trading/sessions?userFid=${userFid}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
         },
-        // Note: Trading engine doesn't require auth token, it's stateless
       })
 
       if (!response.ok) {
@@ -45,36 +46,34 @@ export async function GET(request: NextRequest) {
           errorData = { error: errorText || `HTTP ${response.status}: ${response.statusText}` }
         }
         
-        // If trading engine returns 404 (endpoint not found or no sessions), return empty array with 200
-        // This is expected behavior - no sessions exist yet
+        // If trading engine returns 404, return empty array
         if (response.status === 404) {
-          console.log(`[API] Trading engine returned 404 (no sessions or endpoint not found), returning empty array`)
           return NextResponse.json({
             success: true,
-            sessions: []
+            sessions: [],
+            userFid
           })
         }
         
         console.error(`[API] Trading engine error (${response.status}):`, errorData)
-        // For other errors, return empty array with 200 status (graceful degradation)
         return NextResponse.json({ 
           success: true, 
-          sessions: [] // Return empty array on error (graceful degradation)
+          sessions: [],
+          userFid
         })
       }
 
       const result = await response.json()
-      console.log(`[API] Trading engine returned ${result.sessions?.length || 0} sessions`)
+      console.log(`[API] Trading engine returned ${result.sessions?.length || 0} sessions for FID ${userFid}`)
       
-      // Ensure we return the expected format
       return NextResponse.json({
         success: true,
-        sessions: result.sessions || []
+        sessions: result.sessions || [],
+        userFid,
+        activeCount: result.activeCount || 0
       })
     } catch (fetchError) {
       console.error('[API] Error calling trading engine:', fetchError)
-      // If trading engine is down or unreachable, return empty sessions (graceful degradation)
-      // This prevents frontend errors when trading engine is not available
       return NextResponse.json({
         success: true,
         sessions: []
@@ -86,7 +85,7 @@ export async function GET(request: NextRequest) {
       { 
         success: false, 
         error: error instanceof Error ? error.message : 'Failed to fetch trading sessions',
-        sessions: [] // Return empty array on error
+        sessions: []
       },
       { status: 500 }
     )

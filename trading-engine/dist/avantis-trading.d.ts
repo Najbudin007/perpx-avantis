@@ -66,6 +66,7 @@ export declare function getAvantisPositions(privateKey: string): Promise<Array<{
     symbol: string;
     is_long: boolean;
     collateral: number;
+    position_size?: number;
     leverage: number;
     entry_price: number;
     current_price: number;

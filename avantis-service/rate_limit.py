@@ -99,22 +99,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 cached_positions = await request_cache.get("positions", private_key=private_key, address=address)
                 if cached_positions is not None:
                     # Return cached data immediately without counting as a request
-                    # This prevents rate limiting from affecting UI stability
-                    logger.debug(f"📊 [RATE_LIMIT] Returning cached positions ({len(cached_positions)} positions) - skipping rate limit check")
                     return JSONResponse(
                         status_code=200,
                         content={"positions": cached_positions, "count": len(cached_positions), "cached": True}
                     )
-            except Exception as e:
-                logger.debug(f"Could not get cached positions: {e}")
+            except Exception:
+                pass  # Continue to normal flow if cache fails
         
         # Check burst limit (immediate limit) - increased to handle multiple hooks
         if len(user_requests) >= self.burst:
-            logger.warning(f"🚫 [RATE_LIMIT] Burst limit exceeded: {endpoint} for {user_id[:20]}... ({len(user_requests)} requests)")
-            
             # For positions endpoint, return empty positions instead of 429 to prevent UI flickering
             if endpoint == "/api/positions":
-                logger.info(f"📊 [RATE_LIMIT] Rate limited - returning empty positions to prevent UI flickering")
                 return JSONResponse(
                     status_code=200,
                     content={"positions": [], "count": 0, "cached": False, "rate_limited": True}
@@ -132,11 +127,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Check per-minute limit
         if len(user_requests) >= self.requests_per_minute:
-            logger.warning(f"🚫 [RATE_LIMIT] Rate limit exceeded: {endpoint} for {user_id[:20]}... ({len(user_requests)} requests)")
-            
             # For positions endpoint, return empty positions instead of 429 to prevent UI flickering
             if endpoint == "/api/positions":
-                logger.info(f"📊 [RATE_LIMIT] Rate limited - returning empty positions to prevent UI flickering")
                 return JSONResponse(
                     status_code=200,
                     content={"positions": [], "count": 0, "cached": False, "rate_limited": True}

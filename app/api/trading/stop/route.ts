@@ -11,11 +11,11 @@ export async function POST(request: NextRequest) {
 
     const token = authHeader.substring(7)
     
-    // Verify token (supports both Farcaster and Web users)
+    // Verify Farcaster token
     let authContext;
     try {
       authContext = await verifyTokenAndGetContext(token)
-      console.log(`[API] Verified ${authContext.context} user for stop trading`)
+      console.log(`[API] Verified Farcaster user for stop trading, FID: ${authContext.fid}`)
     } catch (authError) {
       console.error('[API] Token verification failed:', authError)
       return NextResponse.json(
@@ -45,8 +45,7 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify({
           sessionId,
-          userFid: authContext.context === 'farcaster' ? authContext.fid : undefined,
-          webUserId: authContext.context === 'web' ? authContext.webUserId : undefined,
+          userFid: authContext.fid,
         })
       })
 

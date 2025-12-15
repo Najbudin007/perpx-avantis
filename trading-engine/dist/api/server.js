@@ -492,23 +492,25 @@ app.get('/api/positions', async (req, res) => {
             }).catch(() => null);
             clearTimeout(healthTimeout);
             if (!healthResponse || !healthResponse.ok) {
-                // Avantis service not available - return empty positions instead of error
+                // Avantis service not available - return empty positions instead of leaving request hanging
                 console.log(`[API] Avantis service not available at ${avantisApiUrl}, returning empty positions`);
-                return {
+                return res.json({
                     positions: [],
                     totalPnL: 0,
-                    openPositions: 0
-                };
+                    openPositions: 0,
+                    warning: 'Avantis service unavailable during health check'
+                });
             }
         }
         catch (healthError) {
             // Service not available - return empty positions
             console.log(`[API] Avantis service health check failed, returning empty positions`);
-            return {
+            return res.json({
                 positions: [],
                 totalPnL: 0,
-                openPositions: 0
-            };
+                openPositions: 0,
+                warning: 'Avantis service health check failed'
+            });
         }
         // Add timeout to prevent hanging (45 seconds to allow for RPC rate limiting)
         const controller = new AbortController();
