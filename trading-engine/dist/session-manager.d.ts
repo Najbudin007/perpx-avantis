@@ -4,7 +4,6 @@ export interface TradingConfig {
     profitGoal: number;
     maxPerSession: number;
     lossThreshold?: number;
-    userPhoneNumber?: string;
     walletAddress?: string;
     userFid?: number;
     privateKey?: string;
@@ -20,11 +19,28 @@ export interface SessionStatus {
     error?: string;
 }
 export declare class TradingSessionManager {
-    private tradingBot;
     private sessions;
+    private userSessions;
+    private walletSessions;
     constructor();
     startSession(config: TradingConfig): Promise<string>;
+    /**
+     * Get all sessions for a specific user by FID
+     */
+    getSessionsByUser(userFid: number): SessionStatus[];
+    /**
+     * Get all sessions for a specific wallet address
+     */
+    getSessionsByWallet(walletAddress: string): SessionStatus[];
+    /**
+     * Stop all sessions for a specific user
+     */
+    stopAllUserSessions(userFid: number): number;
     private startSessionMonitoring;
+    /**
+     * Clean up a session after delay
+     */
+    private cleanupSession;
     private updateSessionStatus;
     private broadcastUpdate;
     subscribeToUpdates(sessionId: string, ws: WebSocket): void;
@@ -42,6 +58,14 @@ export declare class TradingSessionManager {
     })[];
     stopSession(sessionId: string): boolean;
     forceStopSession(sessionId: string): boolean;
+    /**
+     * Get count of active sessions
+     */
+    getActiveSessionCount(): number;
+    /**
+     * Check if a user has any running sessions
+     */
+    hasRunningSession(userFid: number): boolean;
     cleanup(): void;
 }
 //# sourceMappingURL=session-manager.d.ts.map

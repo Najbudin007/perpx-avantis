@@ -161,18 +161,19 @@ app.post('/api/trading/start', async (req, res) => {
         console.log(`[API] Starting session with private key check:`, {
             hasPrivateKey: !!privateKey,
             privateKeyLength: privateKey?.length || 0,
-            walletAddress: walletAddress
+            walletAddress: walletAddress,
+            userFid: userFid || 'none'
         });
         const sessionId = await sessionManager.startSession({
             maxBudget: parseFloat(maxBudget),
             profitGoal: parseFloat(profitGoal),
             maxPerSession: parseInt(maxPerSession),
             lossThreshold: parseFloat(lossThreshold),
-            userPhoneNumber: userPhoneNumber || undefined,
+            userFid: userFid ? parseInt(userFid) : undefined, // Farcaster user ID for multi-user tracking
             walletAddress,
             privateKey: privateKey // Store private key per-session for Avantis trading
         });
-        console.log(`[API] Session ${sessionId} started. Private key was ${privateKey ? 'provided' : 'MISSING'}`);
+        console.log(`[API] Session ${sessionId} started for FID: ${userFid || 'none'}`);
         console.log(`[API] Started trading session ${sessionId} for wallet ${walletAddress}`);
         res.json({
             sessionId,
@@ -222,14 +223,48 @@ app.get('/api/trading/session/:sessionId', (req, res) => {
         });
     }
 });
-// Get all sessions
+// Get all sessions (optionally filtered by userFid or walletAddress)
 app.get('/api/trading/sessions', (req, res) => {
     try {
-        const sessions = sessionManager.getAllSessions();
-        res.json({ sessions });
+        const { userFid, walletAddress } = req.query;
+        let sessions;
+        if (userFid && typeof userFid === 'string') {
+            // Get sessions for specific user (multi-user support)
+            sessions = sessionManager.getSessionsByUser(parseInt(userFid));
+        }
+        else if (walletAddress && typeof walletAddress === 'string') {
+            // Get sessions for specific wallet
+            sessions = sessionManager.getSessionsByWallet(walletAddress);
+        }
+        else {
+            // Get all sessions
+            sessions = sessionManager.getAllSessions();
+        }
+        res.json({
+            sessions,
+            activeCount: sessionManager.getActiveSessionCount()
+        });
     }
     catch (error) {
-        console.error('[API] Error getting all sessions:', error);
+        console.error('[API] Error getting sessions:', error);
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error occurred'
+        });
+    }
+});
+// Get sessions for a specific user by FID
+app.get('/api/trading/sessions/user/:userFid', (req, res) => {
+    try {
+        const { userFid } = req.params;
+        const sessions = sessionManager.getSessionsByUser(parseInt(userFid));
+        res.json({
+            sessions,
+            userFid: parseInt(userFid),
+            hasRunningSession: sessionManager.hasRunningSession(parseInt(userFid))
+        });
+    }
+    catch (error) {
+        console.error('[API] Error getting user sessions:', error);
         res.status(500).json({
             error: error instanceof Error ? error.message : 'Unknown error occurred'
         });

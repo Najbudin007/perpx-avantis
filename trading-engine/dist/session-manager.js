@@ -9,16 +9,27 @@ const ws_1 = __importDefault(require("ws"));
 const web_trading_bot_1 = require("./hyperliquid/web-trading-bot");
 class TradingSessionManager {
     constructor() {
+        // Map sessions by sessionId - each user can have multiple sessions
         this.sessions = new Map();
-        this.tradingBot = new web_trading_bot_1.WebTradingBot();
+        // Track sessions by user FID for easy lookup
+        this.userSessions = new Map();
+        // Track sessions by wallet address for easy lookup
+        this.walletSessions = new Map();
+        // No shared bot - each session gets its own
+        console.log('[SESSION_MANAGER] Initialized with multi-user support');
     }
     async startSession(config) {
-        const sessionId = `session_${Date.now()}`;
+        const userFid = config.userFid;
+        const walletAddress = config.walletAddress?.toLowerCase();
+        // Generate unique session ID with user context
+        const sessionId = `session_${userFid || 'anon'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Create a NEW bot instance for this session (not shared)
+        const bot = new web_trading_bot_1.WebTradingBot();
         // Create config with sessionId and private key
         const botConfig = {
             ...config,
             sessionId,
-            privateKey: config.privateKey // Pass private key to bot for Avantis trading
+            privateKey: config.privateKey
         };
         // Create session record immediately (before bot initialization)
         const session = {
@@ -34,51 +45,99 @@ class TradingSessionManager {
                 error: undefined
             },
             subscribers: new Set(),
-            walletAddress: config.walletAddress, // Store wallet address for queries
+            walletAddress: walletAddress,
+            bot, // Store the bot instance with the session
         };
         this.sessions.set(sessionId, session);
-        console.log(`[SESSION_MANAGER] Starting session ${sessionId} with config:`, {
-            ...config,
-            privateKey: config.privateKey ? `${config.privateKey.slice(0, 10)}...${config.privateKey.slice(-4)}` : 'MISSING'
-        });
-        console.log(`[SESSION_MANAGER] Trading session ${sessionId} with wallet ${config.walletAddress}`);
-        console.log(`[SESSION_MANAGER] Private key check:`, {
-            hasPrivateKey: !!config.privateKey,
-            privateKeyLength: config.privateKey?.length || 0,
-            botConfigHasPrivateKey: !!botConfig.privateKey
-        });
+        // Track session by user FID
+        if (userFid) {
+            if (!this.userSessions.has(userFid)) {
+                this.userSessions.set(userFid, new Set());
+            }
+            this.userSessions.get(userFid).add(sessionId);
+        }
+        // Track session by wallet address
+        if (walletAddress) {
+            if (!this.walletSessions.has(walletAddress)) {
+                this.walletSessions.set(walletAddress, new Set());
+            }
+            this.walletSessions.get(walletAddress).add(sessionId);
+        }
+        console.log(`[SESSION_MANAGER] Starting session ${sessionId}`);
+        console.log(`[SESSION_MANAGER] User FID: ${userFid}, Wallet: ${walletAddress}`);
+        console.log(`[SESSION_MANAGER] Active sessions: ${this.sessions.size}`);
         // Start monitoring the session immediately
         this.startSessionMonitoring(sessionId);
         // Start the trading bot asynchronously (don't await - return sessionId immediately)
-        // This allows the API to respond faster while bot initializes in background
-        this.tradingBot.startTrading(botConfig).catch((error) => {
+        bot.startTrading(botConfig).catch((error) => {
             console.error(`[SESSION_MANAGER] Error starting bot for session ${sessionId}:`, error);
-            // Update session status to error
-            const errorStatus = {
+            session.status = {
                 ...session.status,
                 status: 'error',
                 error: error instanceof Error ? error.message : 'Unknown error'
             };
-            session.status = errorStatus;
         });
-        // Return sessionId immediately (bot initializes in background)
         return sessionId;
+    }
+    /**
+     * Get all sessions for a specific user by FID
+     */
+    getSessionsByUser(userFid) {
+        const sessionIds = this.userSessions.get(userFid);
+        if (!sessionIds)
+            return [];
+        return Array.from(sessionIds)
+            .map(id => this.sessions.get(id))
+            .filter((s) => !!s)
+            .map(s => this.sanitizeSessionStatus(s.status));
+    }
+    /**
+     * Get all sessions for a specific wallet address
+     */
+    getSessionsByWallet(walletAddress) {
+        const normalizedAddress = walletAddress.toLowerCase();
+        const sessionIds = this.walletSessions.get(normalizedAddress);
+        if (!sessionIds)
+            return [];
+        return Array.from(sessionIds)
+            .map(id => this.sessions.get(id))
+            .filter((s) => !!s)
+            .map(s => this.sanitizeSessionStatus(s.status));
+    }
+    /**
+     * Stop all sessions for a specific user
+     */
+    stopAllUserSessions(userFid) {
+        const sessionIds = this.userSessions.get(userFid);
+        if (!sessionIds)
+            return 0;
+        let stoppedCount = 0;
+        sessionIds.forEach(sessionId => {
+            if (this.stopSession(sessionId)) {
+                stoppedCount++;
+            }
+        });
+        return stoppedCount;
     }
     startSessionMonitoring(sessionId) {
         const session = this.sessions.get(sessionId);
         if (!session)
             return;
-        // Monitor bot status for trading wallet sessions
+        // Monitor the session's bot status
         const monitorInterval = setInterval(() => {
-            const botStatus = this.tradingBot.getStatus();
-            const session = this.sessions.get(sessionId);
-            if (!botStatus || !session) {
+            const currentSession = this.sessions.get(sessionId);
+            if (!currentSession) {
                 clearInterval(monitorInterval);
                 return;
             }
-            // Update session status from bot
-            session.status = {
-                ...session.status,
+            const botStatus = currentSession.bot.getStatus();
+            if (!botStatus) {
+                clearInterval(monitorInterval);
+                return;
+            }
+            // Update session status from its own bot
+            currentSession.status = {
+                ...currentSession.status,
                 pnl: botStatus.pnl || 0,
                 openPositions: botStatus.openPositions || 0,
                 cycle: botStatus.cycle || 0,
@@ -89,11 +148,48 @@ class TradingSessionManager {
             // Clean up if session is completed or stopped
             if (!botStatus.isRunning) {
                 clearInterval(monitorInterval);
-                setTimeout(() => {
-                    this.sessions.delete(sessionId);
-                }, 30000);
+                this.cleanupSession(sessionId, 30000); // Cleanup after 30 seconds
             }
-        }, 5000); // Check every 5 seconds (reduced from 1 second for performance)
+        }, 5000);
+        // Store interval reference for cleanup
+        session.monitorInterval = monitorInterval;
+    }
+    /**
+     * Clean up a session after delay
+     */
+    cleanupSession(sessionId, delay = 0) {
+        setTimeout(() => {
+            const session = this.sessions.get(sessionId);
+            if (session) {
+                // Clear monitor interval
+                if (session.monitorInterval) {
+                    clearInterval(session.monitorInterval);
+                }
+                // Remove from user sessions tracking
+                if (session.config.userFid) {
+                    const userSessions = this.userSessions.get(session.config.userFid);
+                    if (userSessions) {
+                        userSessions.delete(sessionId);
+                        if (userSessions.size === 0) {
+                            this.userSessions.delete(session.config.userFid);
+                        }
+                    }
+                }
+                // Remove from wallet sessions tracking
+                if (session.walletAddress) {
+                    const walletSessions = this.walletSessions.get(session.walletAddress);
+                    if (walletSessions) {
+                        walletSessions.delete(sessionId);
+                        if (walletSessions.size === 0) {
+                            this.walletSessions.delete(session.walletAddress);
+                        }
+                    }
+                }
+                // Remove session
+                this.sessions.delete(sessionId);
+                console.log(`[SESSION_MANAGER] Cleaned up session ${sessionId}. Active sessions: ${this.sessions.size}`);
+            }
+        }, delay);
     }
     updateSessionStatus(sessionId, updates) {
         const session = this.sessions.get(sessionId);
@@ -181,9 +277,11 @@ class TradingSessionManager {
             if (session.monitorInterval) {
                 clearInterval(session.monitorInterval);
             }
-            // Stop trading bot
-            this.tradingBot.stopTrading();
+            // Stop this session's specific bot (not affecting other users)
+            session.bot.stopTrading();
             this.updateSessionStatus(sessionId, { status: 'stopped', lastUpdate: new Date() });
+            // Schedule cleanup
+            this.cleanupSession(sessionId, 30000);
             return true;
         }
         return false;
@@ -191,10 +289,46 @@ class TradingSessionManager {
     forceStopSession(sessionId) {
         return this.stopSession(sessionId);
     }
+    /**
+     * Get count of active sessions
+     */
+    getActiveSessionCount() {
+        let count = 0;
+        this.sessions.forEach(session => {
+            if (session.status.status === 'running') {
+                count++;
+            }
+        });
+        return count;
+    }
+    /**
+     * Check if a user has any running sessions
+     */
+    hasRunningSession(userFid) {
+        const sessionIds = this.userSessions.get(userFid);
+        if (!sessionIds)
+            return false;
+        for (const sessionId of sessionIds) {
+            const session = this.sessions.get(sessionId);
+            if (session && session.status.status === 'running') {
+                return true;
+            }
+        }
+        return false;
+    }
     cleanup() {
         console.log('[SESSION_MANAGER] Cleaning up all sessions');
-        this.tradingBot.stopTrading();
+        // Stop all individual bots
+        this.sessions.forEach((session, sessionId) => {
+            if (session.monitorInterval) {
+                clearInterval(session.monitorInterval);
+            }
+            session.bot.stopTrading();
+        });
         this.sessions.clear();
+        this.userSessions.clear();
+        this.walletSessions.clear();
+        console.log('[SESSION_MANAGER] All sessions cleaned up');
     }
 }
 exports.TradingSessionManager = TradingSessionManager;
