@@ -2195,12 +2195,8 @@ export default function HomePage() {
       }
 
       lastPositionOpenedRef.current = { count, ts: now }
-
-      addToast({
-        type: 'success',
-        title: 'Position Opened Successfully',
-        message: `Position opened! You now have ${count} active position${count > 1 ? 's' : ''}. Check the positions table for details.`
-      })
+      // Note: intentionally no toast here to avoid showing a message
+      // when positions already exist and the page reloads.
     }
     
     const handlePositionUpdated = () => {
