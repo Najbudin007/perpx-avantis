@@ -13,6 +13,7 @@ interface PositionsTableProps {
   onClosePosition?: (position: Position) => Promise<void>
   onEditPosition?: (position: Position) => void
   hasStaleData?: boolean // Indicates we have stale data (background refresh in progress)
+  closingPositions?: Array<number | string> // Positions currently closing (optimistic)
 }
 
 // Helper function to calculate PnL from price update (matches backend logic)
@@ -312,7 +313,7 @@ function ClosePositionModal({
   )
 }
 
-export function PositionsTable({ positions, isLoading = false, onClosePosition, onEditPosition, hasStaleData = false }: PositionsTableProps) {
+export function PositionsTable({ positions, isLoading = false, onClosePosition, onEditPosition, hasStaleData = false, closingPositions = [] }: PositionsTableProps) {
   const [editingPosition, setEditingPosition] = useState<Position | null>(null)
   const [closingPosition, setClosingPosition] = useState<Position | null>(null)
   const [isClosing, setIsClosing] = useState(false)
@@ -502,6 +503,9 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
       {hasStaleData && (
         <RefreshIndicator isRefreshing={true} message="Updating positions..." />
       )}
+      {closingPositions.length > 0 && (
+        <LoadingState message="Closing position..." />
+      )}
       
       <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
         {/* Table */}
@@ -524,6 +528,8 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
             {/* Body */}
             <tbody>
               {positionsWithLivePrices.map((position, index) => {
+                const positionId = (position as any).pair_index ?? (position as any).id ?? `${position.coin}-${index}`
+                const isClosingRow = closingPositions.includes(positionId)
                 const leverageNum = typeof position.leverage === 'string' ? parseFloat(position.leverage) : position.leverage
                 const positionSize = position.positionValue || (position.collateral ? position.collateral * leverageNum : 0)
                 const pnlValue = position.pnl || 0
@@ -538,7 +544,10 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                   : null
                 
                 return (
-                  <tr key={`${position.coin}-${index}`} className="border-b border-[#262626] hover:bg-[#2a2a2a]/50 transition-colors">
+                  <tr 
+                    key={`${position.coin}-${index}`} 
+                    className={`border-b border-[#262626] hover:bg-[#2a2a2a]/50 transition-colors ${isClosingRow ? 'opacity-70' : ''}`}
+                  >
                     {/* Pair */}
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
@@ -612,11 +621,18 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                     
                     {/* Action Buttons */}
                     <td className="px-4 py-4">
+                      {isClosingRow && (
+                        <div className="flex items-center gap-2 text-xs text-[#9ca3af] mb-2">
+                          <div className="w-3 h-3 border-2 border-[#8759ff] border-t-transparent rounded-full animate-spin"></div>
+                          <span>Closing...</span>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2">
                         {/* Edit TP/SL Button */}
                         <button
                           onClick={() => setEditingPosition(position)}
-                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#374151] rounded-lg flex items-center justify-center transition-colors group"
+                          disabled={isClosingRow}
+                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#374151] rounded-lg flex items-center justify-center transition-colors group disabled:opacity-50"
                           title="Edit TP/SL"
                         >
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">
@@ -628,7 +644,8 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
                         {/* Close Position Button */}
                         <button
                           onClick={() => setClosingPosition(position)}
-                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#ef4444] rounded-lg flex items-center justify-center transition-colors group"
+                          disabled={isClosingRow}
+                          className="w-8 h-8 bg-[#2a2a2a] hover:bg-[#ef4444] rounded-lg flex items-center justify-center transition-colors group disabled:opacity-50"
                           title="Close Position"
                         >
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#9ca3af] group-hover:text-white">

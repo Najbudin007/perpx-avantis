@@ -1564,17 +1564,18 @@ const TradeHistoryTab = ({
     // Listen for position closed events to reload trade history
     const handlePositionClosed = () => {
       console.log('[TradeHistory] Position closed event received, reloading...')
-      // Wait longer for blockchain to confirm and Avantis service to index
+      setIsLoading(true)
+      // Quick follow-up refresh to update UI fast
       setTimeout(() => {
-        console.log('[TradeHistory] Reloading after position close...')
+        console.log('[TradeHistory] Reloading after position close (fast pass)...')
         loadTradeHistory()
-      }, 5000) // Increased to 5 seconds for blockchain confirmation
+      }, 1200)
       
-      // Also reload after 30 seconds in case indexing takes longer
+      // Fallback refresh in case indexing lags
       setTimeout(() => {
         console.log('[TradeHistory] Secondary reload after position close...')
         loadTradeHistory()
-      }, 30000)
+      }, 10000)
     }
     
     // Listen for manual refresh event
@@ -1717,60 +1718,103 @@ const TradeHistoryTab = ({
           
           
           {tradeHistory.length > 0 ? (
-            <div className="space-y-3">
-              {tradeHistory.map((trade, index) => {
-                const pnl = trade.pnl || 0
-                const pnlPercentage = trade.pnl_percentage || 0
-                const isProfitable = pnl >= 0
-                
-                return (
-                  <div key={trade.id || trade.tx_hash || index} className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-3">
-                        <span className="text-white font-semibold">{trade.symbol}USD</span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${trade.is_long ? 'bg-[#27c47d]/20 text-[#27c47d]' : 'bg-[#ef4444]/20 text-[#ef4444]'}`}>
-                          {trade.side || (trade.is_long ? 'Long' : 'Short')} {trade.leverage}x
-                        </span>
-                      </div>
-                      <span className="text-[#9ca3af] text-xs">{trade.date || formatDate(trade.timestamp)}</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-                      <div>
-                        <span className="text-[#9ca3af] text-xs block">Collateral</span>
-                        <span className="text-white">{trade.collateral?.toFixed(2) || '0.00'} USDC</span>
-                      </div>
-                      <div>
-                        <span className="text-[#9ca3af] text-xs block">Open Price</span>
-                        <span className="text-white">{formatPrice(trade.open_price)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#9ca3af] text-xs block">Close Price</span>
-                        <span className="text-white">{formatPrice(trade.close_price)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#9ca3af] text-xs block">PnL</span>
-                        <span className={isProfitable ? 'text-[#27c47d]' : 'text-[#ef4444]'}>
-                          {isProfitable ? '+' : ''}{pnl.toFixed(2)} USDC ({pnlPercentage.toFixed(2)}%)
-                        </span>
-                      </div>
-                    </div>
-                    
-                    {trade.tx_hash && (
-                      <div className="mt-2 pt-2 border-t border-[#374151]">
-                        <a 
-                          href={`https://basescan.org/tx/${trade.tx_hash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[#8759ff] text-xs hover:underline"
-                        >
-                          View on Basescan →
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+            <div className="bg-[#1a1a1a] rounded-lg overflow-hidden border border-[#262626]">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[900px]">
+                  <thead>
+                    <tr className="border-b border-[#374151] bg-[#1a1a1a]">
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Pair</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Pos Size</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Collateral</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Open Price</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Close Price</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">PnL</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Closed At</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Tx</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tradeHistory.map((trade, index) => {
+                      const pnl = trade.pnl || 0
+                      const pnlPercentage = trade.pnl_percentage || 0
+                      const isProfitable = pnl >= 0
+                      const rawLeverage = trade.leverage || trade.leverage_used || trade.max_leverage
+                      const leverage = typeof rawLeverage === 'string' ? parseFloat(rawLeverage) || undefined : rawLeverage
+                      const side = trade.side || (trade.is_long ? 'Long' : 'Short')
+                      const symbol = trade.symbol || trade.pair || trade.coin || '—'
+                      const rawCollateral = trade.collateral ?? trade.collateral_usd ?? 0
+                      const collateral = typeof rawCollateral === 'string' ? parseFloat(rawCollateral) || 0 : rawCollateral
+                      const positionSize = trade.position_size || trade.size || (collateral && leverage ? collateral * leverage : null)
+                      const dateLabel = trade.date || formatDate(trade.timestamp)
+                      
+                      return (
+                        <tr key={trade.id || trade.tx_hash || index} className="border-b border-[#262626] hover:bg-[#2a2a2a]/50 transition-colors">
+                          <td className="px-4 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-[#f7931a] flex items-center justify-center">
+                                <span className="text-white font-bold text-xs">₿</span>
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-white font-medium">{symbol}USD</span>
+                                  <span className={`text-xs px-2 py-0.5 rounded ${trade.is_long ? 'bg-[#27c47d]/20 text-[#27c47d]' : 'bg-[#ef4444]/20 text-[#ef4444]'}`}>
+                                    {side} {leverage ? `${leverage}x` : ''}
+                                  </span>
+                                </div>
+                                <span className="text-[#9ca3af] text-xs">Perp</span>
+                              </div>
+                            </div>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <div className="text-white">{positionSize ? positionSize.toFixed(2) : '—'} USDC</div>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <span className="text-white">{collateral ? collateral.toFixed(2) : '0.00'} USDC</span>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <span className="text-white">{formatPrice(trade.open_price)}</span>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <span className="text-white">{formatPrice(trade.close_price)}</span>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <div className={isProfitable ? 'text-[#27c47d]' : 'text-[#ef4444]'}>
+                              {isProfitable ? '+' : ''}{pnl.toFixed(2)} USDC
+                            </div>
+                            <div className={`text-xs ${isProfitable ? 'text-[#27c47d]' : 'text-[#ef4444]'}`}>
+                              {isProfitable ? '+' : ''}{pnlPercentage.toFixed(2)}%
+                            </div>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            <span className="text-[#9ca3af] text-xs">{dateLabel}</span>
+                          </td>
+                          
+                          <td className="px-4 py-4">
+                            {trade.tx_hash ? (
+                              <a 
+                                href={`https://basescan.org/tx/${trade.tx_hash}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#8759ff] text-xs hover:underline"
+                              >
+                                View Tx
+                              </a>
+                            ) : (
+                              <span className="text-[#9ca3af] text-xs">N/A</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : (
             <div className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-8 text-center">
@@ -2056,6 +2100,7 @@ export default function HomePage() {
   
   // Tab state for Positions/Balances/Trade History
   const [activeTab, setActiveTab] = useState<'positions' | 'balances' | 'tradeHistory'>('positions')
+  const [closingPositions, setClosingPositions] = useState<(number | string)[]>([])
   
   // Withdraw modal state
   const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false)
@@ -2371,11 +2416,13 @@ export default function HomePage() {
       });
       return;
     }
-    
-    // Optimistic update: Store previous state
-    const previousPositions = positionData?.positions || []
-    const previousOpenPositions = positionData?.openPositions || 0
-    
+    // Mark as closing immediately for UI feedback
+    setClosingPositions((prev) => Array.from(new Set([...prev, positionId as number | string])))
+    // Safety timeout to clear stuck states
+    const cleanupTimer = setTimeout(() => {
+      setClosingPositions((prev) => prev.filter((id) => id !== positionId))
+    }, 45000)
+
     try {
       // Optimistic UI update
       addToast({
@@ -2393,6 +2440,10 @@ export default function HomePage() {
           title: 'Position Closed',
           message: `Successfully closed ${position.coin} ${position.side.toUpperCase()}`
         });
+        // Notify other parts of the UI immediately
+        window.dispatchEvent(new CustomEvent('position-closed', {
+          detail: { pair_index: positionId }
+        }))
         // Refresh positions and balance after successful close
         await fetchPositions?.(true);
         // Also refresh balance as closing position releases collateral
@@ -2413,7 +2464,11 @@ export default function HomePage() {
         message: error instanceof Error ? error.message : 'Unknown error occurred'
       });
     }
-  }, [closePosition, addToast, positionData, fetchPositions]);
+    finally {
+      clearTimeout(cleanupTimer)
+      setClosingPositions((prev) => prev.filter((id) => id !== positionId))
+    }
+  }, [closePosition, addToast, fetchPositions]);
   
   // Note: Removed activeSessions fetching - FloatingLiveCard handles session display now
 
@@ -3184,6 +3239,7 @@ export default function HomePage() {
                       positions={positionData?.positions || []}
                       isLoading={positionsLoading}
                       hasStaleData={hasStaleData}
+                      closingPositions={closingPositions}
                       onClosePosition={handleClosePosition}
                     />
                     {/* Show message if no positions but session is running */}
@@ -3442,6 +3498,7 @@ export default function HomePage() {
               positions={positionData?.positions || []}
               isLoading={positionsLoading}
               hasStaleData={hasStaleData}
+              closingPositions={closingPositions}
               onClosePosition={handleClosePosition}
             />
           </div>
