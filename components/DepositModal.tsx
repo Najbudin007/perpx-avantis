@@ -72,8 +72,17 @@ export function DepositModal({
     : 'https://basescan.org'
 
   useEffect(() => {
-    if (recentDepositHash) {
-      setHasSuccessfulDeposit(true)
+    // Listen for deposit-completed event to set success state
+    const handleDepositCompleted = (event: CustomEvent) => {
+      if (event.detail?.txHash === recentDepositHash) {
+        setHasSuccessfulDeposit(true)
+      }
+    }
+    
+    window.addEventListener('deposit-completed', handleDepositCompleted as EventListener)
+    
+    return () => {
+      window.removeEventListener('deposit-completed', handleDepositCompleted as EventListener)
     }
   }, [recentDepositHash])
 
@@ -355,9 +364,9 @@ export function DepositModal({
         {/* Success Message */}
         {hasSuccessfulDeposit && recentDepositHash && (
           <div className="bg-green-900/20 border border-green-500/50 rounded-lg p-3 space-y-2">
-            <p className="text-green-400 text-sm font-semibold">Deposit Successful!</p>
+            <p className="text-green-400 text-sm font-semibold">Deposit Confirmed!</p>
             <p className="text-green-300 text-xs">
-              Your deposit has been initiated. Funds will appear once the transaction confirms.
+              Your deposit transaction has been confirmed on-chain. Funds should now be available in your trading wallet.
             </p>
             <a
               className="text-green-400 hover:text-green-300 text-xs underline block"

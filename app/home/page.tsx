@@ -14,7 +14,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { useToast } from "@/components/ui/toast"
 import { ProgressIndicator } from "@/components/ui/progress-indicator"
 import { EmptyState } from "@/components/ui/empty-state"
-import { BalanceSkeleton, CardSkeleton } from "@/components/ui/loading-skeleton"
+import { BalanceSkeleton, CardSkeleton, LoadingState, RefreshIndicator, TradeSkeleton } from "@/components/ui/loading-skeleton"
 import { NavigationHeader } from "@/components/NavigationHeader"
 import { DepositModal } from "@/components/DepositModal"
 import { WalletConnectionModal } from "@/components/WalletConnectionModal"
@@ -225,6 +225,7 @@ const TradingCard = ({
   isRefreshingBalance = false,
   addToast,
   startTradingSession,
+  authToken,
 }: {
   targetProfit: string
   setTargetProfit: (value: string) => void
@@ -253,6 +254,7 @@ const TradingCard = ({
     maxPerSession?: number;
     lossThreshold?: number;
   }, onProgress?: (step: string, message: string) => void) => Promise<string>
+  authToken?: string | null
 }) => {
   const [isTrading, setIsTrading] = useState(false)
   const { positionData } = usePositions() // Removed positionsLoading - it shouldn't block button
@@ -436,8 +438,7 @@ const TradingCard = ({
 
     // Check gas fees before starting trading
     try {
-      const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token')
-      if (!token) {
+      if (!authToken) {
         addToast({
           type: 'error',
           title: 'Authentication Error',
@@ -449,7 +450,7 @@ const TradingCard = ({
       const gasCheckResponse = await fetch('/api/trading/check-gas', {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
         }
       })
@@ -457,7 +458,29 @@ const TradingCard = ({
       if (!gasCheckResponse.ok) {
         const errorData = await gasCheckResponse.json().catch(() => ({}))
         console.error('[handleStartTrading] Gas check failed:', errorData)
-        // Continue anyway - might be a temporary API issue
+        
+        // Handle authentication errors specifically
+        if (gasCheckResponse.status === 401 || gasCheckResponse.status === 403) {
+          addToast({
+            type: 'error',
+            title: 'Authentication Error',
+            message: errorData.message || 'Your session may have expired. Please refresh the page and try again.'
+          })
+          return
+        }
+        
+        // For other errors (404, 500, etc.), show specific message but don't block
+        if (gasCheckResponse.status === 404) {
+          addToast({
+            type: 'error',
+            title: 'Trading Wallet Not Found',
+            message: errorData.message || 'Your trading wallet is not set up. Please refresh the page and try again.'
+          })
+          return
+        }
+        
+        // For other errors, show warning but continue (might be temporary API issue)
+        console.warn('[handleStartTrading] Gas check returned non-ok status, but continuing:', gasCheckResponse.status)
       } else {
         const gasData = await gasCheckResponse.json()
         
@@ -1584,7 +1607,15 @@ const TradeHistoryTab = ({
         loadTradeHistory()
       }, 30000)
     }
+    
+    // Listen for manual refresh event
+    const handleRefreshTradeHistory = () => {
+      console.log('[TradeHistory] Manual refresh event received')
+      loadTradeHistory()
+    }
+    
     window.addEventListener('position-closed', handlePositionClosed)
+    window.addEventListener('refresh-trade-history', handleRefreshTradeHistory)
     
     // Refresh every 120 seconds (reduced frequency to reduce server load)
     const interval = setInterval(() => {
@@ -1595,6 +1626,7 @@ const TradeHistoryTab = ({
     return () => {
       clearInterval(interval)
       window.removeEventListener('position-closed', handlePositionClosed)
+      window.removeEventListener('refresh-trade-history', handleRefreshTradeHistory)
     }
   }, [loadTradeHistory])
   
@@ -1623,10 +1655,34 @@ const TradeHistoryTab = ({
       : `$${price.toFixed(4)}`
   }
   
-  if (isLoading) {
+  if (isLoading && tradeHistory.length === 0) {
     return (
       <div className="p-4 sm:p-6">
-        <div className="text-center text-[#9ca3af] text-sm">Loading trade history...</div>
+        <LoadingState message="Loading trade history..." />
+        <div className="space-y-3 mt-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="bg-[#2a2a2a] border border-[#374151] rounded-lg p-4 animate-pulse">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-gray-700 rounded"></div>
+                  <div>
+                    <div className="h-4 bg-gray-700 rounded w-24 mb-2"></div>
+                    <div className="h-3 bg-gray-700 rounded w-32"></div>
+                  </div>
+                </div>
+                <div className="h-3 bg-gray-700 rounded w-20"></div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {Array.from({ length: 4 }).map((_, j) => (
+                  <div key={j}>
+                    <div className="h-3 bg-gray-700 rounded w-16 mb-2"></div>
+                    <div className="h-4 bg-gray-700 rounded w-20"></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
@@ -1667,11 +1723,28 @@ const TradeHistoryTab = ({
                 loadTradeHistory()
               }}
               disabled={isLoading}
-              className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {isLoading ? 'Refreshing...' : 'Refresh'}
+              {isLoading ? (
+                <>
+                  <div className="w-3 h-3 border-2 border-[#8759ff] border-t-transparent rounded-full animate-spin"></div>
+                  <span>Refreshing...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  <span>Refresh</span>
+                </>
+              )}
             </button>
           </div>
+          
+          {/* Refresh indicator */}
+          {isLoading && tradeHistory.length > 0 && (
+            <RefreshIndicator isRefreshing={true} message="Updating trade history..." />
+          )}
           
           
           {tradeHistory.length > 0 ? (
@@ -2070,12 +2143,14 @@ export default function HomePage() {
   // 🛑 STABILIZE: Use refs to avoid function dependency
   const fetchPositionsRef = useRef(fetchPositions);
   const refreshBalancesRef = useRef(refreshBalances);
+  const refreshSessionStatusRef = useRef(refreshSessionStatus);
   useEffect(() => {
     fetchPositionsRef.current = fetchPositions;
     refreshBalancesRef.current = refreshBalances;
-  }, [fetchPositions, refreshBalances]);
+    refreshSessionStatusRef.current = refreshSessionStatus;
+  }, [fetchPositions, refreshBalances, refreshSessionStatus]);
   
-  // Listen for position closed events to refresh balance
+  // Listen for position events and deposits to refresh data
   useEffect(() => {
     const handlePositionClosed = () => {
       // Refresh balance and positions after close
@@ -2083,8 +2158,47 @@ export default function HomePage() {
       fetchPositionsRef.current?.(true)
     }
     
+    const handlePositionOpened = () => {
+      // Refresh positions when new position opens
+      fetchPositionsRef.current?.(true)
+    }
+    
+    const handlePositionUpdated = () => {
+      // Refresh positions when TP/SL is updated
+      fetchPositionsRef.current?.(true)
+    }
+    
+    const handleDepositCompleted = () => {
+      // Refresh balance and positions after deposit
+      refreshBalancesRef.current?.(true)
+      // Wait a bit for balance to update, then refresh positions
+      setTimeout(() => {
+        fetchPositionsRef.current?.(true)
+      }, 2000)
+    }
+    
+    const handleWithdrawCompleted = () => {
+      // Refresh balance and positions after withdraw
+      refreshBalancesRef.current?.(true)
+      // Wait a bit for balance to update, then refresh positions
+      setTimeout(() => {
+        fetchPositionsRef.current?.(true)
+      }, 2000)
+    }
+    
     window.addEventListener('position-closed', handlePositionClosed)
-    return () => window.removeEventListener('position-closed', handlePositionClosed)
+    window.addEventListener('position-opened', handlePositionOpened)
+    window.addEventListener('position-updated', handlePositionUpdated)
+    window.addEventListener('deposit-completed', handleDepositCompleted)
+    window.addEventListener('withdraw-completed', handleWithdrawCompleted)
+    
+    return () => {
+      window.removeEventListener('position-closed', handlePositionClosed)
+      window.removeEventListener('position-opened', handlePositionOpened)
+      window.removeEventListener('position-updated', handlePositionUpdated)
+      window.removeEventListener('deposit-completed', handleDepositCompleted)
+      window.removeEventListener('withdraw-completed', handleWithdrawCompleted)
+    }
   }, []) // Empty deps - handler uses refs
   
   // Handle viewing trades - show positions in modal
@@ -2102,10 +2216,10 @@ export default function HomePage() {
   
   // 🛑 STABILIZE: Extract primitive values from tradingSession
   const tradingSessionStatusRef = useRef<string | null>(null);
-  const refreshSessionStatusRef = useRef(refreshSessionStatus);
   
   useEffect(() => {
     tradingSessionStatusRef.current = tradingSession?.status || null;
+    // Update the shared ref
     refreshSessionStatusRef.current = refreshSessionStatus;
   }, [tradingSession?.status, refreshSessionStatus]);
   
@@ -2160,7 +2274,7 @@ export default function HomePage() {
     if (openPositions > 0 && !sessionStatus && avantisBalance > 0) {
       // Restore session if positions exist but no session
       timeoutId = setTimeout(() => {
-        refreshSessionStatusRef2.current?.(true).catch(err => {
+        refreshSessionStatusRef.current?.(true).catch(err => {
           // Silent error handling
         });
       }, 1000); // Small delay to avoid race conditions
@@ -2197,12 +2311,32 @@ export default function HomePage() {
         const response = await fetch(`${explorerBaseUrl}/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}`)
         const data = await response.json()
         
-        if (data.status === '1' && data.result?.status === '1') {
-          // Transaction confirmed
-          if (pollTimer) clearInterval(pollTimer)
-          pollTimer = null
-          onConfirmed?.()
-          return true
+        // Check if transaction exists and is confirmed
+        if (data.status === '1' && data.result) {
+          if (data.result.status === '1') {
+            // Transaction confirmed successfully
+            if (pollTimer) clearInterval(pollTimer)
+            pollTimer = null
+            onConfirmed?.()
+            return true
+          } else if (data.result.status === '0') {
+            // Transaction failed/reverted/cancelled
+            if (pollTimer) clearInterval(pollTimer)
+            pollTimer = null
+            // Call onCancelled if provided, otherwise treat as timeout
+            if ((onConfirmed as any)?._onCancelled) {
+              (onConfirmed as any)._onCancelled()
+            } else {
+              onTimeout?.()
+            }
+            return true
+          }
+        }
+        
+        // Check if transaction doesn't exist (might be cancelled or not yet mined)
+        if (data.status === '0' && data.message?.includes('transaction hash')) {
+          // Transaction not found - might be cancelled or still pending
+          // Continue polling unless timeout
         }
         
         // Check timeout
@@ -2281,8 +2415,10 @@ export default function HomePage() {
           title: 'Position Closed',
           message: `Successfully closed ${position.coin} ${position.side.toUpperCase()}`
         });
-        // Refresh positions after successful close
+        // Refresh positions and balance after successful close
         await fetchPositions?.(true);
+        // Also refresh balance as closing position releases collateral
+        refreshBalancesRef.current?.(true);
       } else {
         // Rollback: Position close failed
         addToast({
@@ -2483,7 +2619,8 @@ export default function HomePage() {
         const txHash = await signAndSendTransaction(txRequest)
         setRecentDepositHash(txHash)
         
-        // Start transaction status polling with timeout
+        // DON'T show success yet - wait for confirmation
+        // Only show that transaction was submitted
         addToast({
           type: 'info',
           title: 'Transaction Submitted',
@@ -2495,7 +2632,8 @@ export default function HomePage() {
           txHash,
           60000, // 60 second timeout
           async () => {
-            // Transaction confirmed
+            // Transaction confirmed - NOW show success
+            // Note: DepositModal manages its own hasSuccessfulDeposit state
             addToast({
               type: 'success',
               title: 'Deposit Confirmed',
@@ -2510,23 +2648,61 @@ export default function HomePage() {
             // Mark this transaction as refreshed
             hasRefreshedForTxRef.current.add(txHash)
             
-            // Auto-refresh balance after successful deposit confirmation
+            // Auto-refresh balance and positions after successful deposit confirmation
             setIsRefreshingBalance(true)
             try {
+              // Wait for blockchain confirmation
               await new Promise(resolve => setTimeout(resolve, 2000))
-              await refreshBalances(true) // Force refresh
+              
+              // Refresh balances first
+              await refreshBalances(true)
+              
+              // Then refresh positions (deposit might affect available balance for positions)
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              fetchPositionsRef.current?.(true)
+              
+              // Dispatch deposit-completed event for other components
+              window.dispatchEvent(new CustomEvent('deposit-completed', {
+                detail: { amount, asset, txHash }
+              }))
             } catch (refreshError) {
               // Don't throw - deposit was successful, just balance refresh failed
+              console.error('[handleDeposit] Error refreshing after deposit:', refreshError)
             } finally {
               setIsRefreshingBalance(false)
             }
           },
-          () => {
+          async () => {
+            // Transaction timeout or cancelled - check final status
+            try {
+              const explorerBaseUrl = process.env.NEXT_PUBLIC_AVANTIS_NETWORK === 'base-mainnet'
+                ? 'https://basescan.org'
+                : 'https://sepolia.basescan.org'
+              
+              // Final check to see if transaction was cancelled
+              const finalCheck = await fetch(`${explorerBaseUrl}/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}`)
+              const finalData = await finalCheck.json()
+              
+              if (finalData.status === '1' && finalData.result?.status === '0') {
+                // Transaction was cancelled/failed
+                setDepositError('Transaction was cancelled or failed. Please try again.')
+                setRecentDepositHash(null)
+                addToast({
+                  type: 'error',
+                  title: 'Transaction Cancelled',
+                  message: 'The deposit transaction was cancelled. Please try again.'
+                })
+                return
+              }
+            } catch (checkError) {
+              // Error checking final status - continue with timeout message
+            }
+            
             // Transaction timeout - still try to refresh
             addToast({
               type: 'warning',
               title: 'Confirmation Timeout',
-              message: 'Transaction may still be processing. Balance will update when confirmed.'
+              message: 'Transaction may still be processing. Please check BaseScan to verify status.'
             })
             
             if (hasRefreshedForTxRef.current.has(txHash)) {
@@ -2561,6 +2737,7 @@ export default function HomePage() {
         const message = error instanceof Error ? error.message : 'Deposit failed'
         setDepositError(message)
         setRecentDepositHash(null)
+        // Note: DepositModal manages its own hasSuccessfulDeposit state
         
         addToast({
           type: 'error',
@@ -2585,6 +2762,10 @@ export default function HomePage() {
       estimateGas,
       baseSdk,
       pollTransactionStatus,
+      setDepositError,
+      setRecentDepositHash,
+      setIsDepositing,
+      setIsRefreshingBalance,
       addToast,
       avantisBalance,
       hasRefreshedForTxRef
@@ -2655,13 +2836,26 @@ export default function HomePage() {
               message: `Successfully withdrew $${amount} USDC`
             })
             
-            // Refresh balance after successful withdrawal confirmation
+            // Auto-refresh balance, positions, and trade history after successful withdrawal confirmation
             setIsRefreshingBalance(true)
             try {
+              // Wait for blockchain confirmation
               await new Promise(resolve => setTimeout(resolve, 2000))
+              
+              // Refresh balances first
               await refreshBalances(true)
+              
+              // Then refresh positions (withdrawal might affect available balance)
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              fetchPositionsRef.current?.(true)
+              
+              // Dispatch withdraw-completed event for other components
+              window.dispatchEvent(new CustomEvent('withdraw-completed', {
+                detail: { amount, asset: 'USDC', txHash }
+              }))
             } catch (refreshError) {
               // Don't throw - withdrawal was successful
+              console.error('[handleWithdraw] Error refreshing after withdraw:', refreshError)
             } finally {
               setIsRefreshingBalance(false)
             }
@@ -2789,18 +2983,49 @@ export default function HomePage() {
                 <Button
                   onClick={async () => {
                     try {
-                      await refreshWallets()
-                      await refreshBalances(true)
+                      setIsRefreshingBalance(true)
+                      addToast({
+                        type: 'info',
+                        title: 'Refreshing All Data',
+                        message: 'Updating balances, positions, and trades...'
+                      })
+                      
+                      // Hard refresh: refresh everything
+                      await Promise.all([
+                        refreshWallets(),
+                        refreshBalances(true),
+                        fetchPositionsRef.current?.(true),
+                        refreshSessionStatusRef.current?.(true)
+                      ])
+                      
+                      // Also refresh trade history if we're on that tab
+                      if (activeTab === 'tradeHistory') {
+                        // Trigger trade history refresh by dispatching event
+                        window.dispatchEvent(new CustomEvent('refresh-trade-history'))
+                      }
+                      
+                      addToast({
+                        type: 'success',
+                        title: 'Refresh Complete',
+                        message: 'All data has been updated'
+                      })
                     } catch (err) {
-                      // Refresh failed
+                      console.error('[Refresh] Error refreshing:', err)
+                      addToast({
+                        type: 'error',
+                        title: 'Refresh Failed',
+                        message: 'Some data may not have updated. Please try again.'
+                      })
+                    } finally {
+                      setIsRefreshingBalance(false)
                     }
                   }}
-                  disabled={isLoading}
+                  disabled={isLoading || isRefreshingBalance}
                   className="bg-[#8759ff] hover:bg-[#7c4dff] text-white p-2 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={isLoading ? 'Refreshing...' : 'Refresh Balances'}
+                  title={isLoading || isRefreshingBalance ? 'Refreshing all data...' : 'Refresh All Data'}
                 >
                   <svg 
-                    className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} 
+                    className={`w-5 h-5 ${(isLoading || isRefreshingBalance) ? 'animate-spin' : ''}`} 
                     fill="none" 
                     stroke="currentColor" 
                     viewBox="0 0 24 24"
@@ -2868,6 +3093,7 @@ export default function HomePage() {
               onViewTrades={handleViewTrades}
               isRefreshingBalance={isRefreshingBalance}
               addToast={addToast}
+              authToken={authToken}
               startTradingSession={async (config, onProgress) => {
                 try {
                   let returnedSessionId: string | undefined
@@ -2954,6 +3180,30 @@ export default function HomePage() {
                 {/* Positions Tab - Always visible */}
                 {activeTab === 'positions' && (
                   <div className="p-4 sm:p-6">
+                    {/* Header with refresh button */}
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-white font-semibold text-lg">Open Positions</h3>
+                      <button
+                        onClick={() => fetchPositions?.(true)}
+                        disabled={positionsLoading}
+                        className="px-3 py-1.5 bg-[#262626] hover:bg-[#2a2a2a] text-[#9ca3af] hover:text-white text-xs rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        {positionsLoading ? (
+                          <>
+                            <div className="w-3 h-3 border-2 border-[#8759ff] border-t-transparent rounded-full animate-spin"></div>
+                            <span>Refreshing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            <span>Refresh</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    
                     {/* Debug info in development */}
                     {process.env.NODE_ENV === 'development' && (
                       <div className="mb-4 text-xs text-gray-500">
@@ -2976,8 +3226,11 @@ export default function HomePage() {
                         <p className="text-sm mt-2">Positions will appear here once opened by the trading bot.</p>
                         <button
                           onClick={() => fetchPositions?.(true)}
-                          className="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm"
+                          className="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm flex items-center gap-2 mx-auto"
                         >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
                           Refresh Positions
                         </button>
                       </div>

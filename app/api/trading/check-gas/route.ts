@@ -23,11 +23,31 @@ export async function GET(request: NextRequest) {
     // Verify authentication
     const authHeader = request.headers.get('authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error('[check-gas] Missing or invalid authorization header')
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const token = authHeader.substring(7)
-    const authContext = await verifyTokenAndGetContext(token)
+    
+    // Log token info for debugging (first/last few chars only)
+    const tokenPreview = token.length > 20 ? `${token.substring(0, 10)}...${token.substring(token.length - 10)}` : 'SHORT_TOKEN'
+    console.log(`[check-gas] Verifying token for user: ${tokenPreview}`)
+    
+    let authContext
+    try {
+      authContext = await verifyTokenAndGetContext(token)
+      console.log(`[check-gas] ✅ Token verified: ${authContext.context} user (${authContext.context === 'farcaster' ? `FID: ${authContext.fid}` : `WebUserId: ${authContext.webUserId}`})`)
+    } catch (authError) {
+      console.error(`[check-gas] ❌ Token verification failed:`, authError)
+      return NextResponse.json(
+        { 
+          error: 'Authentication failed',
+          hasSufficientGas: false,
+          message: authError instanceof Error ? authError.message : 'Token verification failed'
+        },
+        { status: 401 }
+      )
+    }
     
     let wallet: { address: string; privateKey: string } | null = null;
     
@@ -65,11 +85,15 @@ export async function GET(request: NextRequest) {
     }
     
     if (!wallet || !wallet.address) {
+      console.error(`[check-gas] ❌ Trading wallet not found for ${authContext.context} user (${authContext.context === 'farcaster' ? `FID: ${authContext.fid}` : `WebUserId: ${authContext.webUserId}`})`)
       return NextResponse.json({ 
         error: 'Trading wallet not found',
-        hasSufficientGas: false
+        hasSufficientGas: false,
+        message: 'Please ensure your trading wallet is set up. You may need to refresh the page.'
       }, { status: 404 })
     }
+    
+    console.log(`[check-gas] ✅ Trading wallet found: ${wallet.address.substring(0, 10)}...${wallet.address.substring(wallet.address.length - 8)}`)
 
     // Get network config
     const networkConfig = getNetworkConfig()

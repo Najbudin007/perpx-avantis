@@ -5,6 +5,7 @@ import type { Position } from '@/types/trading'
 import { useLivePrices } from '@/lib/hooks/useLivePrices'
 import { useAuth } from '@/lib/auth/AuthContext'
 import { useToast } from '@/components/ui/toast'
+import { PositionSkeleton, RefreshIndicator, LoadingState } from '@/components/ui/loading-skeleton'
 
 interface PositionsTableProps {
   positions: Position[]
@@ -430,13 +431,13 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
       
       // Refresh positions after update by dispatching event
       // This works in both web and Farcaster app
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('position-updated'))
-        // Also call parent callback if provided
-        if (onEditPosition) {
-          onEditPosition(editingPosition)
-        }
-      }, 500)
+      window.dispatchEvent(new CustomEvent('position-updated', {
+        detail: { pair_index: editingPosition.pair_index }
+      }))
+      // Also call parent callback if provided
+      if (onEditPosition) {
+        onEditPosition(editingPosition)
+      }
     } catch (error) {
       console.error('[PositionsTable] Failed to update TP/SL:', error)
       const errorMessage = error instanceof Error ? error.message : 'Failed to update TP/SL'
@@ -450,12 +451,13 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
     }
   }
   
-  if (isLoading) {
+  if (isLoading && positions.length === 0) {
     return (
-      <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
-        <div className="p-4 sm:p-6">
-          <div className="text-center text-[#9ca3af] text-sm">Loading positions...</div>
-        </div>
+      <div className="space-y-3">
+        <RefreshIndicator isRefreshing={true} message="Loading positions..." />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <PositionSkeleton key={i} />
+        ))}
       </div>
     )
   }
@@ -496,6 +498,11 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
   
   return (
     <>
+      {/* Refresh indicator when data is stale */}
+      {hasStaleData && (
+        <RefreshIndicator isRefreshing={true} message="Updating positions..." />
+      )}
+      
       <div className="bg-[#1a1a1a] rounded-lg overflow-hidden">
         {/* Table */}
         <div className="overflow-x-auto">
