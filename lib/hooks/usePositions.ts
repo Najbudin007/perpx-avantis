@@ -36,6 +36,10 @@ export interface PositionData {
 const POSITIONS_CACHE_KEY = 'perpx_positions_cache';
 const POSITIONS_CACHE_EXPIRY = 5 * 60 * 1000; // 5 minutes
 
+// 🔄 LIGHT AUTO-REFRESH: Gentle polling to keep positions fresh without feeling laggy
+// Kept reasonably high to avoid hammering the API or hitting rate limits.
+const AUTO_REFRESH_INTERVAL_MS = 15000; // 15 seconds
+
 interface CachedPositions {
   data: PositionData;
   wallet: string;
@@ -168,7 +172,7 @@ export function usePositions() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         controller.abort();
-      }, 70000);
+      }, 25000); // 25s timeout so UI doesn't feel frozen forever
 
       const response = await fetch('/api/positions', {
         headers: {
@@ -545,6 +549,30 @@ export function usePositions() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [token, walletAddressString]); // Only primitives - use ref for positionData
+
+  // 🔄 LIGHT AUTO-REFRESH: keep positions reasonably fresh without aggressive polling
+  useEffect(() => {
+    const wallet = walletAddressString;
+    const hasToken = !!token;
+
+    if (!wallet || !hasToken) {
+      return;
+    }
+
+    // Update ref so auto-refresh always uses the latest wallet
+    walletAddress.current = wallet;
+
+    const intervalId = setInterval(() => {
+      // Respect existing in-flight requests and backoff logic inside fetchPositionsSafe
+      if (!isFetchingRef.current) {
+        fetchPositionsSafe(walletAddress.current, false);
+      }
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [token, walletAddressString, fetchPositionsSafe]);
 
   // Listen for position change events - stable handler
   useEffect(() => {

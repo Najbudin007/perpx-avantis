@@ -2175,38 +2175,10 @@ export default function HomePage() {
     refreshSessionStatusRef.current = refreshSessionStatus;
   }, [fetchPositions, refreshBalances, refreshSessionStatus]);
   
-  // Listen for position events and deposits to refresh data
+  // Listen for deposit/withdraw events to refresh balances and positions.
+  // NOTE: Position open/close/update events are already handled inside usePositions.
+  // We intentionally do NOT refetch positions here to avoid duplicate fetches and flicker.
   useEffect(() => {
-    const handlePositionClosed = () => {
-      // Refresh balance and positions after close
-      refreshBalancesRef.current?.()
-      fetchPositionsRef.current?.(true)
-    }
-    
-    const handlePositionOpened = (event: any) => {
-      // Refresh positions when new position opens
-      fetchPositionsRef.current?.(true)
-
-      const detail = event?.detail || {}
-      const count = detail.count || 1
-
-      // Deduplicate rapid duplicate events (e.g. from multiple sources on mount)
-      const now = Date.now()
-      const last = lastPositionOpenedRef.current
-      if (last && last.count === count && (now - last.ts) < 3000) {
-        return
-      }
-
-      lastPositionOpenedRef.current = { count, ts: now }
-      // Note: intentionally no toast here to avoid showing a message
-      // when positions already exist and the page reloads.
-    }
-    
-    const handlePositionUpdated = () => {
-      // Refresh positions when TP/SL is updated
-      fetchPositionsRef.current?.(true)
-    }
-    
     const handleDepositCompleted = () => {
       // Refresh balance and positions after deposit
       refreshBalancesRef.current?.(true)
@@ -2225,16 +2197,10 @@ export default function HomePage() {
       }, 2000)
     }
     
-    window.addEventListener('position-closed', handlePositionClosed)
-    window.addEventListener('position-opened', handlePositionOpened)
-    window.addEventListener('position-updated', handlePositionUpdated)
     window.addEventListener('deposit-completed', handleDepositCompleted)
     window.addEventListener('withdraw-completed', handleWithdrawCompleted)
     
     return () => {
-      window.removeEventListener('position-closed', handlePositionClosed)
-      window.removeEventListener('position-opened', handlePositionOpened)
-      window.removeEventListener('position-updated', handlePositionUpdated)
       window.removeEventListener('deposit-completed', handleDepositCompleted)
       window.removeEventListener('withdraw-completed', handleWithdrawCompleted)
     }

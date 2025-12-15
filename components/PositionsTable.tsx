@@ -456,10 +456,9 @@ export function PositionsTable({ positions, isLoading = false, onClosePosition, 
   if (isLoading && positions.length === 0) {
     return (
       <div className="space-y-3">
-        <RefreshIndicator isRefreshing={true} message="Loading positions..." />
-        {Array.from({ length: 3 }).map((_, i) => (
-          <PositionSkeleton key={i} />
-        ))}
+        {/* Compact loading state: spinner + single lightweight skeleton row */}
+        <LoadingState message="Loading positions..." showSpinner={true} />
+        <PositionSkeleton />
       </div>
     )
   }
