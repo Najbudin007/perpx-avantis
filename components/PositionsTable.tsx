@@ -6,6 +6,7 @@ import { useLivePrices } from '@/lib/hooks/useLivePrices'
 import { useAuth } from '@/lib/auth/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { PositionSkeleton, RefreshIndicator, LoadingState } from '@/components/ui/loading-skeleton'
+import { getAssetIcon } from '@/lib/utils/assetIcons'
 
 interface PositionsTableProps {
   positions: Position[]
