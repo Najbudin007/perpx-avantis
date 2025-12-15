@@ -251,11 +251,27 @@ async def api_open_position(request: OpenPositionRequest):
             detail=f"Symbol not supported: {str(e)}"
         )
     except ValueError as e:
+        error_msg = str(e)
+        # Check if it's an insufficient funds error
+        if "insufficient" in error_msg.lower() or "balance" in error_msg.lower() or "gas" in error_msg.lower():
+            logger.error(f"Insufficient funds/gas error in open_position: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient ETH balance for gas fees. {error_msg} Please add ETH to your trading wallet to cover transaction costs."
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        error_msg = str(e)
+        # Check if it's an insufficient funds error from Web3
+        if "insufficient funds" in error_msg.lower() or "insufficient balance" in error_msg.lower():
+            logger.error(f"Insufficient funds error in open_position: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Insufficient ETH balance for gas fees. Please add ETH to your trading wallet to cover transaction costs."
+            )
         logger.error(f"Error in open_position: {e}", exc_info=True)
         http_status = map_exception_to_http_status(e)
         raise HTTPException(

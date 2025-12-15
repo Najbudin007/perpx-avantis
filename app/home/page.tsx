@@ -434,20 +434,53 @@ const TradingCard = ({
       return;
     }
 
-    // Check ETH balance for gas fees
-    // Minimum ETH required: ~0.0002 ETH (0.0001 for execution fee + 0.0001 buffer for gas)
-    const MIN_ETH_REQUIRED = 0.0002;
-    const ethBalanceNum = ethBalanceFormatted 
-      ? parseFloat(ethBalanceFormatted.replace(/[^0-9.]/g, '')) || 0
-      : 0;
-    
-    if (ethBalanceNum < MIN_ETH_REQUIRED) {
-      addToast({
-        type: 'error',
-        title: 'Insufficient ETH Balance',
-        message: `You need at least ${MIN_ETH_REQUIRED} ETH for gas fees to start trading. Your current ETH balance is ${ethBalanceNum.toFixed(6)} ETH. Please deposit ETH to your wallet.`
+    // Check gas fees before starting trading
+    try {
+      const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token')
+      if (!token) {
+        addToast({
+          type: 'error',
+          title: 'Authentication Error',
+          message: 'Please refresh the page and try again.'
+        })
+        return
+      }
+
+      const gasCheckResponse = await fetch('/api/trading/check-gas', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
       })
-      return;
+
+      if (!gasCheckResponse.ok) {
+        const errorData = await gasCheckResponse.json().catch(() => ({}))
+        console.error('[handleStartTrading] Gas check failed:', errorData)
+        // Continue anyway - might be a temporary API issue
+      } else {
+        const gasData = await gasCheckResponse.json()
+        
+        if (!gasData.hasSufficientGas) {
+          addToast({
+            type: 'error',
+            title: 'Insufficient ETH for Gas Fees',
+            message: `You need ${gasData.requiredEth.toFixed(6)} ETH for gas fees to start trading, but only have ${gasData.balanceEth.toFixed(6)} ETH. Please deposit at least ${gasData.shortfallEth.toFixed(6)} ETH more to your trading wallet.`
+          })
+          return
+        }
+        
+        console.log(`[handleStartTrading] ✅ Gas check passed: ${gasData.balanceEth.toFixed(6)} ETH >= ${gasData.requiredEth.toFixed(6)} ETH`)
+      }
+    } catch (gasCheckError) {
+      console.error('[handleStartTrading] Error checking gas fees:', gasCheckError)
+      // Don't block trading if gas check fails - might be a temporary issue
+      // But show a warning
+      addToast({
+        type: 'warning',
+        title: 'Gas Check Warning',
+        message: 'Could not verify gas fees. Please ensure you have sufficient ETH (at least 0.001 ETH) before starting trading.'
+      })
     }
 
     // Calculate target profit USD from percent (already validated to be <= 100%)
