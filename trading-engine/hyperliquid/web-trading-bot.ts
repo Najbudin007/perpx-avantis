@@ -151,16 +151,17 @@ export class WebTradingBot {
     log('EXEC_BOT', `========================================`);
 
     // Evaluate signals for available symbols (ONE TIME, NOT A LOOP)
-    // IMPORTANT: Only include symbols that are supported on BOTH:
-    // - Hyperliquid price feeds
-    // - Avantis on-chain symbol registry (see perpx-avantis-service logs)
+    // IMPORTANT:
+    // - BTC, ETH and SOL are PRIORITY assets and must be tried FIRST
+    // - Only if none of them produce a valid signal should we look at other assets
+    // - All symbols included here must be supported on BOTH:
+    //   - Hyperliquid price feeds
+    //   - Avantis on-chain symbol registry (see perpx-avantis-service logs)
     //
     // This prevents the bot from selecting symbols like ATOM that are not
     // tradable on the current Avantis deployment.
-    const symbols = [
-      'BTC',
-      'ETH',
-      'SOL',
+    const prioritySymbols = ['BTC', 'ETH', 'SOL'];
+    const secondarySymbols = [
       'BNB',
       'ARB',
       'DOGE',
@@ -192,38 +193,63 @@ export class WebTradingBot {
     const validatedBudget = validateAndCapBudget(maxBudget, maxPerSession, 'BTC');
     const collateral = validatedBudget.budgetPerPosition;
 
-    // Evaluate each symbol to find best signal
-    for (const symbol of symbols) {
-      try {
-              const [ohlcv4h, ohlcv6h] = await Promise.all([
-                getCachedOHLCV(symbol, '4h', 300).catch(() => null),
-                getCachedOHLCV(symbol, '6h', 300).catch(() => null)
-              ]);
-              
-              if (!ohlcv4h || !ohlcv6h || ohlcv4h.close.length < 10 || ohlcv6h.close.length < 10) {
-          continue; // Skip if insufficient data
-        }
+    // Helper to evaluate a list of symbols and return the best passing signal
+    const evaluateSymbolList = async (
+      symbolsToEvaluate: string[],
+      listName: string
+    ): Promise<{ symbol: string; score: number; direction: string; leverage: number } | null> => {
+      let localBest: { symbol: string; score: number; direction: string; leverage: number } | null = null;
 
-        const { leverage } = getBudgetAndLeverage(marketRegime as any, symbol, collateral);
-        
-              const signalResult = await evaluateSignalOnly(symbol, ohlcv4h, {
-                regimeOverride: marketRegime as any,
-                leverage,
-                bypassBacktestCheck: true
-              });
+      for (const symbol of symbolsToEvaluate) {
+        try {
+          const [ohlcv4h, ohlcv6h] = await Promise.all([
+            getCachedOHLCV(symbol, '4h', 300).catch(() => null),
+            getCachedOHLCV(symbol, '6h', 300).catch(() => null),
+          ]);
 
-        const { direction, signalScore, passed } = signalResult;
-
-        if (passed && direction && signalScore) {
-          log('EXEC_BOT', `${symbol}: score=${signalScore.toFixed(2)}, direction=${direction}, leverage=${leverage}x`);
-          
-          if (!bestSignal || signalScore > bestSignal.score) {
-            bestSignal = { symbol, score: signalScore, direction, leverage };
+          if (!ohlcv4h || !ohlcv6h || ohlcv4h.close.length < 10 || ohlcv6h.close.length < 10) {
+            continue; // Skip if insufficient data
           }
+
+          const { leverage } = getBudgetAndLeverage(marketRegime as any, symbol, collateral);
+
+          const signalResult = await evaluateSignalOnly(symbol, ohlcv4h, {
+            regimeOverride: marketRegime as any,
+            leverage,
+            bypassBacktestCheck: true,
+          });
+
+          const { direction, signalScore, passed } = signalResult;
+
+          if (passed && direction && signalScore) {
+            log(
+              'EXEC_BOT',
+              `[${listName}] ${symbol}: score=${signalScore.toFixed(2)}, direction=${direction}, leverage=${leverage}x`
+            );
+
+            if (!localBest || signalScore > localBest.score) {
+              localBest = { symbol, score: signalScore, direction, leverage };
+            }
+          }
+        } catch (err) {
+          log('WARN', `Could not evaluate ${symbol} in ${listName}: ${err}`);
         }
-      } catch (err) {
-        log('WARN', `Could not evaluate ${symbol}: ${err}`);
       }
+
+      return localBest;
+    };
+
+    // 1) Try BTC / ETH / SOL first
+    log('EXEC_BOT', `Evaluating priority symbols first: ${prioritySymbols.join(', ')}`);
+    bestSignal = await evaluateSymbolList(prioritySymbols, 'PRIORITY');
+
+    // 2) Only if NONE of BTC/ETH/SOL have a valid signal, fall back to other assets
+    if (!bestSignal) {
+      log(
+        'EXEC_BOT',
+        `No valid signal on priority assets (BTC/ETH/SOL). Falling back to secondary assets: ${secondarySymbols.join(', ')}`
+      );
+      bestSignal = await evaluateSymbolList(secondarySymbols, 'SECONDARY');
     }
 
     if (!bestSignal) {
