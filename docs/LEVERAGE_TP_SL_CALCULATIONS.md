@@ -8,32 +8,61 @@ This document explains how leverage, Take Profit (TP), and Stop Loss (SL) are ca
 3. [Stop Loss (SL) Calculation](#stop-loss-sl-calculation)
 4. [Liquidation Price Calculation](#liquidation-price-calculation)
 5. [Position Size and Collateral](#position-size-and-collateral)
-6. [Related Formulas](#related-formulas)
+6. [Signal Thresholds](#signal-thresholds)
+7. [Related Formulas](#related-formulas)
 
 ---
 
 ## Leverage Calculation
 
-### Frontend/Client-Side Leverage Selection
+### System-Controlled Leverage (Production Mode)
 
-The frontend determines appropriate leverage based on user balance using the `calculateLeverageFromBalance()` function:
+**⚠️ IMPORTANT**: Leverage is **fully system-controlled** and cannot be overridden by users.
+
+The system automatically calculates leverage based on balance with safety constraints:
 
 **Location**: `lib/utils/leverageCalculator.ts`
 
 ```typescript
-export function calculateLeverageFromBalance(balance: number, userSpecifiedLeverage?: number): number
+export function calculateLeverageFromBalance(balance: number): number
 ```
 
-**Rules**:
-- **User-specified leverage**: If provided and within range (2x-50x), it takes precedence
-- **Balance-based calculation**:
-  - `$10-$15`: **2x** leverage (conservative for low balances)
-  - `$15-$20`: **3x** leverage
-  - `$20-$50`: **5x** leverage (default)
-  - `$50+`: **5x** leverage (default, user can increase up to 50x)
-  - `< $10`: **2x** leverage (minimum)
+### Safety Model
 
-**Default leverage**: 5x (when no balance is available)
+The leverage system ensures a **3x safety buffer** between SL and liquidation:
+
+```
+liquidation distance ≥ 3 × SL distance
+
+SL_PCT = 2.5% (fixed)
+LIQ_BUFFER = 3 (safety multiplier)
+MAX_SAFE_LEVERAGE = floor(100 / (2.5 × 3)) = 13x
+```
+
+**Why 13x max?**
+- At 13x leverage: Liquidation distance = 100/13 = **7.69%**
+- SL distance × 3 = 2.5% × 3 = **7.5%**
+- 7.69% ≥ 7.5% ✓ (liquidation has buffer above SL)
+
+### Balance-Scaled Leverage Tiers
+
+| Balance Range | Leverage |
+|---------------|----------|
+| < $10         | 2x       |
+| $10 - $24     | 3x       |
+| $25 - $49     | 5x       |
+| $50 - $99     | 7x       |
+| $100 - $249   | 10x      |
+| ≥ $250        | 13x (max)|
+
+**Default leverage**: 2x (minimum safe leverage when no balance available)
+
+### Key Features
+
+✅ **No user override** - Leverage is calculated automatically
+✅ **Balance-scaled** - Higher balances can use higher leverage
+✅ **Safety-capped** - Never exceeds 13x (liquidation buffer maintained)
+✅ **Deterministic** - Same balance always produces same leverage
 
 ---
 
@@ -319,10 +348,30 @@ function div(uint a, uint _leverage) internal pure returns (uint) {
 
 ---
 
+## Signal Thresholds (Production)
+
+The trading bot uses strict signal filters to ensure quality entries:
+
+| Filter | Threshold | Description |
+|--------|-----------|-------------|
+| MOS (Market Outlook Score) | > 0.1 or < -0.1 | Directional bias required |
+| MOS Strong Signal | ≥ 0.3 or ≤ -0.3 | High confidence signal |
+| ADX | ≥ 15 (neutral), ≥ 20 (choppy) | Trend strength |
+| ATR% | 0.15% - 6.0% | Volatility range |
+| Volume | ≥ 50% of average | Liquidity requirement |
+| Signal Score | ≥ 0.25 | Combined indicator score |
+| RSI | 20 - 80 | Not overbought/oversold |
+
+**All filters must pass** for a trade signal to be valid.
+
+---
+
 ## Summary
 
 ### Leverage
-- **Frontend**: Balance-based (2x-50x range, default 5x)
+- **System-Controlled**: Fully automatic, no user override
+- **Balance-Scaled**: 2x ($0-10) → 13x ($250+)
+- **Max Safe Leverage**: 13x (liquidation buffer maintained)
 - **Smart Contract**: `Leverage = Position Size / Collateral`
 
 ### Stop Loss (SL)
@@ -347,26 +396,32 @@ function div(uint a, uint _leverage) internal pure returns (uint) {
 
 ## Notes
 
-1. **Higher leverage** = **Tighter stop loss** (to protect capital)
+1. **Leverage is system-controlled** - No user input accepted
+   - Balance-scaled from 2x to 13x
+   - Max 13x ensures liquidation distance ≥ 3 × SL distance
+2. **Higher leverage** = **Tighter stop loss** (to protect capital)
    - SL percentage = `50 / leverage`, but capped at **2.5% maximum**
    - This ensures even low-leverage positions don't risk more than 2.5%
-2. **Risk-Reward Ratio** is **2:1** (2% risk targets 4% profit)
-3. Smart contract enforces **maximum 80% loss** per position (before leverage adjustment)
+3. **Risk-Reward Ratio** is **2:1** (2% risk targets 4% profit)
+4. Smart contract enforces **maximum 80% loss** per position (before leverage adjustment)
    - Max SL distance = `(entryPrice * 80%) / leverage`
-4. Liquidation occurs when price moves by `1/leverage` fraction from entry
+5. Liquidation occurs when price moves by `1/leverage` fraction from entry
    - LONG: `liquidationPrice = entryPrice × (1 - 1/leverage)`
    - SHORT: `liquidationPrice = entryPrice × (1 + 1/leverage)`
-5. All calculations use high precision (1e10) to avoid rounding errors
-6. TP/SL are calculated as **absolute price levels**, not price differences
+6. All calculations use high precision (1e10) to avoid rounding errors
+7. TP/SL are calculated as **absolute price levels**, not price differences
+8. **Signal thresholds are strict** - All 6 filters must pass for trade entry
 
 ---
 
 ## Code References
 
-- Frontend Leverage: `lib/utils/leverageCalculator.ts`
+- System Leverage Calculator: `lib/utils/leverageCalculator.ts`
 - Primary TP/SL Calculation: `trading-engine/hyperliquid/web-trading-bot.ts` (lines 275-284)
 - Alternative TP/SL (Legacy): `trading-engine/hyperliquid/tpsl.ts` - `getDynamicTP_SL()`
+- Signal Thresholds: `trading-engine/hyperliquid/strategyEngine.ts` (lines 130-256)
 - Smart Contract Leverage: `Trading/src/Trading.sol` (line 637-651)
 - Smart Contract SL Validation: `Trading/src/Trading.sol` (line 595-627)
 - Liquidation Price: `avantis-service/position_queries.py` (line 223-228)
 - PnL Calculation: `components/PositionsTable.tsx` (line 21-45)
+- Live Trading Logs: `lib/hooks/useTradingActivityLogs.ts`

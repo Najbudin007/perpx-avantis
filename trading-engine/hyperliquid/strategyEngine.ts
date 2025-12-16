@@ -127,14 +127,14 @@ export async function evaluateSignalOnly(
     // --- Market Outlook Score (MOS) - IMPROVED LOGIC ---
     const mos = calculateMOS({ ohlcv: ohlcv5m, mtfSlopes: [slope5m, slope30m, slope1h] });
     
-    // 🧪 TESTING MODE: VERY LOOSE THRESHOLDS FOR TESTING ALL FUNCTIONALITY
-    // MOS ranges from ~-1.0 to +1.0, using VERY WIDE thresholds to ensure trades happen
-    const mosThresholdLong = -0.8;   // MOS > -0.8 → Long bias (VERY LOOSE FOR TESTING)
-    const mosThresholdShort = 0.8;  // MOS < 0.8 → Short bias (VERY LOOSE FOR TESTING)
-    const mosThresholdStrongLong = -0.5;   // Strong long signal (LOOSE)
-    const mosThresholdStrongShort = 0.5; // Strong short signal (LOOSE)
-    const mosThresholdReversalBlockShort = 0.9; // Block short reversal (VERY LOOSE)
-    const mosThresholdReversalBlockLong = -0.9;  // Block long reversal (VERY LOOSE)
+    // 🔒 PRODUCTION MODE: Strict thresholds for quality signals
+    // MOS ranges from ~-1.0 to +1.0, using balanced thresholds for reliable trades
+    const mosThresholdLong = 0.1;    // MOS > 0.1 → Long bias (moderate)
+    const mosThresholdShort = -0.1;  // MOS < -0.1 → Short bias (moderate)
+    const mosThresholdStrongLong = 0.3;   // Strong long signal (requires clear trend)
+    const mosThresholdStrongShort = -0.3; // Strong short signal (requires clear trend)
+    const mosThresholdReversalBlockShort = 0.5;  // Block short reversal when bullish
+    const mosThresholdReversalBlockLong = -0.5;  // Block long reversal when bearish
     
     // Determine MOS decision with confidence levels
     let mosDecision: 'long' | 'short' | 'neutral' = 'neutral';
@@ -158,27 +158,27 @@ export async function evaluateSignalOnly(
       mosConfidence = 'moderate';
       mosReason = `🧠 MOS=${mos.toFixed(4)} → Moderate Short Bias (MOS < ${mosThresholdShort})`;
     } else {
-      // Neutral zone: -0.1 to 0.1 (much smaller than before)
-      mosReason = `MOS=${mos.toFixed(4)} → Neutral (insufficient directional bias)`;
+      // Neutral zone: -0.1 to 0.1 - no strong directional bias
+      mosReason = `MOS=${mos.toFixed(4)} → Neutral (waiting for clearer signal)`;
     }
 
     // ========================================================
-    // MARKET FILTERS - Enhanced validation
+    // MARKET FILTERS - Production validation
     // ========================================================
     const marketFilters: Array<{ name: string; pass: boolean; reason: string }> = [];
     
-    // Filter 1: Regime + ADX validation (🧪 VERY LOOSE FOR TESTING)
-    if (marketRegime === 'neutral' && adx < 3) { // Changed from 15 to 3
+    // Filter 1: Regime + ADX validation (🔒 PRODUCTION)
+    if (marketRegime === 'neutral' && adx < 15) {
       marketFilters.push({
         name: 'Regime/ADX',
         pass: false,
-        reason: `Neutral regime with extremely low ADX (${adx.toFixed(2)} < 3)`
+        reason: `Neutral regime with low ADX (${adx.toFixed(2)} < 15) - no clear trend`
       });
-    } else if (marketRegime === 'flat_or_choppy' && adx < 5) { // Changed from 20 to 5
+    } else if (marketRegime === 'flat_or_choppy' && adx < 20) {
       marketFilters.push({
         name: 'Regime/ADX',
         pass: false,
-        reason: `Flat/choppy regime with extremely low ADX (${adx.toFixed(2)} < 5)`
+        reason: `Flat/choppy regime with weak ADX (${adx.toFixed(2)} < 20) - avoid choppy markets`
       });
     } else {
       marketFilters.push({
@@ -188,18 +188,18 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 2: Volatility check (ATR) (🧪 VERY LOOSE FOR TESTING)
-    if (atrPct < 0.01) { // Changed from 0.1 to 0.01 (almost no check)
+    // Filter 2: Volatility check (ATR) (🔒 PRODUCTION)
+    if (atrPct < 0.15) {
       marketFilters.push({
         name: 'Volatility',
         pass: false,
-        reason: `ATR extremely low (${atrPct.toFixed(2)}% < 0.01%)`
+        reason: `ATR too low (${atrPct.toFixed(2)}% < 0.15%) - insufficient volatility for profit`
       });
-    } else if (atrPct > 15.0) { // Changed from 5.0 to 15.0 (allow high volatility)
+    } else if (atrPct > 6.0) {
       marketFilters.push({
         name: 'Volatility',
         pass: false,
-        reason: `ATR extremely high (${atrPct.toFixed(2)}% > 15.0%)`
+        reason: `ATR too high (${atrPct.toFixed(2)}% > 6.0%) - excessive risk`
       });
     } else {
       marketFilters.push({
@@ -209,12 +209,12 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 3: Volume validation (🧪 VERY LOOSE FOR TESTING)
-    if (volumePct < 0.1) { // Changed from 0.5 to 0.1 (allow very low volume)
+    // Filter 3: Volume validation (🔒 PRODUCTION)
+    if (volumePct < 0.5) {
       marketFilters.push({
         name: 'Volume',
         pass: false,
-        reason: `Volume extremely low (${(volumePct * 100).toFixed(2)}% < 10% of average)`
+        reason: `Volume low (${(volumePct * 100).toFixed(2)}% < 50% of average) - low liquidity`
       });
     } else {
       marketFilters.push({
@@ -224,12 +224,12 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 4: Signal strength validation (🧪 VERY LOOSE FOR TESTING)
-    if (signalScore < 0.05) { // Changed from 0.3 to 0.05 (almost no check)
+    // Filter 4: Signal strength validation (🔒 PRODUCTION)
+    if (signalScore < 0.25) {
       marketFilters.push({
         name: 'Signal Strength',
         pass: false,
-        reason: `Signal score extremely weak (${signalScore.toFixed(3)} < 0.05)`
+        reason: `Signal score weak (${signalScore.toFixed(3)} < 0.25) - insufficient conviction`
       });
     } else {
       marketFilters.push({
@@ -239,18 +239,18 @@ export async function evaluateSignalOnly(
       });
     }
     
-    // Filter 5: RSI extreme check (🧪 VERY LOOSE FOR TESTING)
-    if (rsi > 99 || rsi < 1) { // Changed from 85/15 to 99/1 (almost no check)
+    // Filter 5: RSI extreme check (🔒 PRODUCTION)
+    if (rsi > 80 || rsi < 20) {
       marketFilters.push({
         name: 'RSI Extreme',
         pass: false,
-        reason: `RSI at extreme (${rsi.toFixed(2)}) - impossibly overbought/oversold`
+        reason: `RSI at extreme (${rsi.toFixed(2)}) - overbought/oversold, reversal risk`
       });
     } else {
       marketFilters.push({
         name: 'RSI Extreme',
         pass: true,
-        reason: `RSI: ${rsi.toFixed(2)} (within acceptable range)`
+        reason: `RSI: ${rsi.toFixed(2)} (within safe range)`
       });
     }
     
