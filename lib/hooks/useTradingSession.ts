@@ -109,9 +109,19 @@ export function useTradingSession() {
         
         // Only restore if we find a session with status === 'running'
         if (activeSession && activeSession.status === 'running') {
+          const normalizedId = (activeSession as any).id || (activeSession as any).sessionId;
+          
+          if (!normalizedId) {
+            // If we somehow don't have an ID, do not restore to avoid /session/undefined calls
+            if (currentSession) {
+              setTradingSession(null);
+            }
+            return;
+          }
+          
           const sessionState: TradingSessionState = {
-            id: activeSession.id,
-            sessionId: activeSession.id, // Ensure sessionId is set
+            id: normalizedId,
+            sessionId: (activeSession as any).sessionId || normalizedId, // Ensure sessionId is set
             status: activeSession.status,
             startTime: activeSession.startTime,
             totalPnL: activeSession.totalPnL || currentPositionData?.totalPnL || 0,

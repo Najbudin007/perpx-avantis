@@ -401,7 +401,7 @@ export function useTradingFee() {
       }
 
       // Determine payment method - always use trading wallet with private key
-      let result: FeePaymentResult;
+      let result: FeePaymentResult | null = null;
 
       // Since we always use trading wallet now, txData.isBaseAccount should always be false
       // But keep this check for safety
@@ -411,50 +411,81 @@ export function useTradingFee() {
       
       if (effectiveWallet?.privateKey) {
         // Use trading wallet with private key for automated trading
-        
-        // Pay fee directly with the wallet that has private key
         if (!effectiveWallet.privateKey) {
           throw new Error('Private key not available');
         }
-        
+
         const networkConfig = getNetworkConfig();
         const provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
         const wallet = new ethers.Wallet(effectiveWallet.privateKey, provider);
-        
-        const ethAmount = txData.transactions.eth.value;
-        const balance = await provider.getBalance(wallet.address);
-        
-        if (BigInt(balance.toString()) < BigInt(ethAmount)) {
-          throw new Error('Insufficient ETH balance to pay fee');
+
+        // 1) Try to pay fee in USDC first
+        try {
+          const usdcAbi = [
+            'function balanceOf(address owner) view returns (uint256)',
+            'function transfer(address to, uint256 amount) returns (bool)',
+          ];
+          const usdcDecimals = networkConfig.usdcDecimals ?? USDC_DECIMALS;
+          const usdcContract = new ethers.Contract(networkConfig.usdcAddress ?? USDC_ADDRESS, usdcAbi, wallet);
+
+          // Required USDC amount from API (already 1% of trading amount, formatted)
+          const requiredUsdcAmount = ethers.parseUnits(txData.amounts.usdc, usdcDecimals);
+          const usdcBalance = await usdcContract.balanceOf(wallet.address);
+
+          if (BigInt(usdcBalance.toString()) >= BigInt(requiredUsdcAmount.toString())) {
+            const usdcTx = await usdcContract.transfer(FEE_RECIPIENT, requiredUsdcAmount);
+            await usdcTx.wait();
+
+            result = {
+              success: true,
+              transactionHash: usdcTx.hash,
+              amount: txData.amounts.usdc,
+              currency: 'USDC',
+            };
+            // Reset wallet creation attempts on success
+            setWalletCreationAttempts(0);
+          }
+        } catch (usdcError) {
+          console.warn('[useTradingFee] USDC fee payment failed, falling back to ETH:', usdcError);
         }
 
-        // Get the current nonce to avoid "already known" errors
-        // Use 'pending' to include pending transactions in the count
-        let nonce = await provider.getTransactionCount(wallet.address, 'pending');
-        
-        // Double-check nonce after a short delay to ensure we have the latest
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const latestNonce = await provider.getTransactionCount(wallet.address, 'pending');
-        if (latestNonce > nonce) {
-          nonce = latestNonce;
+        // If USDC transfer did not succeed, fall back to ETH (legacy behaviour)
+        if (!result || !result.success) {
+          const ethAmount = txData.transactions.eth.value;
+          const balance = await provider.getBalance(wallet.address);
+
+          if (BigInt(balance.toString()) < BigInt(ethAmount)) {
+            throw new Error('Insufficient ETH balance to pay fee');
+          }
+
+          // Get the current nonce to avoid "already known" errors
+          // Use 'pending' to include pending transactions in the count
+          let nonce = await provider.getTransactionCount(wallet.address, 'pending');
+
+          // Double-check nonce after a short delay to ensure we have the latest
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const latestNonce = await provider.getTransactionCount(wallet.address, 'pending');
+          if (latestNonce > nonce) {
+            nonce = latestNonce;
+          }
+
+          const tx = await wallet.sendTransaction({
+            to: FEE_RECIPIENT,
+            value: ethAmount,
+            nonce: nonce, // Explicitly set nonce to avoid conflicts
+          });
+
+          await tx.wait();
+
+          result = {
+            success: true,
+            transactionHash: tx.hash,
+            amount: txData.amounts.eth,
+            currency: 'ETH',
+          };
+          // Reset wallet creation attempts on success
+          setWalletCreationAttempts(0);
         }
-
-        const tx = await wallet.sendTransaction({
-          to: FEE_RECIPIENT,
-          value: ethAmount,
-          nonce: nonce, // Explicitly set nonce to avoid conflicts
-        });
-
-        await tx.wait();
-
-        result = {
-          success: true,
-          transactionHash: tx.hash,
-          amount: txData.amounts.eth,
-          currency: 'ETH',
-        };
-        // Reset wallet creation attempts on success
-        setWalletCreationAttempts(0);
       } else {
         // No private key and not a Base Account
         throw new Error('Trading wallet private key not available. Please ensure you have deposited funds and your trading wallet is set up correctly.');

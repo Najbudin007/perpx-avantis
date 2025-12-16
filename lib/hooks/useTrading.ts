@@ -268,11 +268,17 @@ export function useTrading() {
 
       // Return sessions array (empty array is valid - means no active sessions)
       const sessions = result.sessions || [];
-      return sessions.map((session: any) => ({
-        ...session,
-        startTime: new Date(session.startTime),
-        endTime: session.endTime ? new Date(session.endTime) : undefined,
-      }));
+      return sessions.map((session: any) => {
+        // Normalise ID field so the rest of the app can rely on `id`
+        const id = session.id || session.sessionId;
+        return {
+          ...session,
+          id,
+          sessionId: session.sessionId || id,
+          startTime: new Date(session.startTime || session.lastUpdate || new Date().toISOString()),
+          endTime: session.endTime ? new Date(session.endTime) : undefined,
+        };
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch trading sessions';
       

@@ -50,20 +50,16 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
     return () => clearInterval(interval)
   }, [token, getTradingSessions])
   
-  // Only show if there are actually open positions
-  // This prevents showing the card when all positions are closed (even if session status is stale)
-  const hasOpenPositions = (positionData?.openPositions || 0) > 0
-  
-  // Also check session positions as fallback (only if positionData is still loading)
-  // Prefer positionData over session data since positionData is more up-to-date
-  const sessionOpenPositions = (tradingSession?.openPositions || activeSessionFromAPI?.openPositions || activeSessionFromAPI?.positions || 0)
-  const hasSessionPositions = sessionOpenPositions > 0
-  
-  // Show only if there are open positions
-  // Prefer positionData (most accurate), only use session data if positionData is still loading
-  const shouldShow = hasOpenPositions || (hasSessionPositions && positionsLoading && positionData === null)
-  
-  if (!shouldShow || !isVisible) {
+  // Determine if there is an active/running session
+  const hasRunningSession =
+    tradingSession?.status === 'running' ||
+    activeSessionFromAPI?.status === 'running' ||
+    hasActiveSession
+
+  // Only show when there is an active session.
+  // This ensures the card is visible even while the bot is monitoring markets
+  // before opening the first position.
+  if (!hasRunningSession || !isVisible) {
     return null
   }
   

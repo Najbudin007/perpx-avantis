@@ -151,7 +151,31 @@ export class WebTradingBot {
     log('EXEC_BOT', `========================================`);
 
     // Evaluate signals for available symbols (ONE TIME, NOT A LOOP)
-    const symbols = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'LINK', 'UNI', 'ATOM'];
+    // IMPORTANT: Only include symbols that are supported on BOTH:
+    // - Hyperliquid price feeds
+    // - Avantis on-chain symbol registry (see perpx-avantis-service logs)
+    //
+    // This prevents the bot from selecting symbols like ATOM that are not
+    // tradable on the current Avantis deployment.
+    const symbols = [
+      'BTC',
+      'ETH',
+      'SOL',
+      'BNB',
+      'ARB',
+      'DOGE',
+      'AVAX',
+      'OP',
+      'AAVE',
+      'NEAR',
+      'FET',
+      'SUI',
+      'JUP',
+      'WIF',
+      'WLD',
+      'TAO',
+      'EIGEN',
+    ];
     let bestSignal: { symbol: string; score: number; direction: string; leverage: number } | null = null;
 
     // Get market regime for evaluation

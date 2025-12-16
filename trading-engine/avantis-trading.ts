@@ -264,37 +264,45 @@ function isTransientError(error: string): boolean {
  * Uses the same mapping as the backend symbol registry
  */
 function getPairIndexForSymbol(symbol: string): number | undefined {
-  // Symbol to pair index mapping (must match backend symbol_registry.py)
+  // Symbol to pair index mapping (must match backend symbol_registry.py).
+  // NOTE: This is a best-effort map used ONLY for pre-validation; the
+  // Python Avantis service is the source of truth and will still validate.
+  //
+  // IMPORTANT: Do NOT include symbols that are not actually supported on
+  // the current Avantis deployment (e.g. ATOM on Base mainnet), otherwise
+  // the bot may try to trade unsupported pairs.
   const symbolToPairIndex: Record<string, number> = {
-    'BTC': 0,
-    'ETH': 1,
-    'SOL': 2,
-    'AVAX': 3,
-    'MATIC': 4,
-    'ARB': 5,
-    'OP': 6,
-    'LINK': 7,
-    'UNI': 8,
-    'AAVE': 9,
-    'ATOM': 10,
-    'DOT': 11,
-    'ADA': 12,
-    'XRP': 13,
-    'DOGE': 14,
-    'BNB': 15,
+    BTC: 0,
+    ETH: 1,
+    SOL: 2,
+    AVAX: 3,
+    BNB: 4,
+    ARB: 5,
+    DOGE: 6,
+    OP: 7,
+    LINK: 8,
+    AAVE: 9,
+    NEAR: 10,
+    FET: 11,
+    SUI: 12,
+    JUP: 13,
+    WIF: 14,
+    WLD: 15,
+    TAO: 16,
+    EIGEN: 17,
   };
 
-  const upperSymbol = symbol.toUpperCase().trim();
+  const upperSymbol = symbol.toUpperCase().trim() as keyof typeof symbolToPairIndex;
   const pairIndex = symbolToPairIndex[upperSymbol];
-  
+
   if (pairIndex !== undefined) {
     console.log(`[AVANTIS] ✅ Resolved pair index ${pairIndex} for symbol ${upperSymbol}`);
     return pairIndex;
-  } else {
-    console.warn(`[AVANTIS] ⚠️ Symbol ${upperSymbol} not found in pair index mapping`);
-    console.warn(`[AVANTIS] ⚠️ Available symbols:`, Object.keys(symbolToPairIndex).join(', '));
-    return undefined;
   }
+
+  console.warn(`[AVANTIS] ⚠️ Symbol ${upperSymbol} not found in pair index mapping (pre-validation only)`);
+  console.warn(`[AVANTIS] ⚠️ Available symbols (pre-validation):`, Object.keys(symbolToPairIndex).join(', '));
+  return undefined;
 }
 
 /**
