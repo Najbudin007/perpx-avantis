@@ -59,7 +59,31 @@ export declare function closeAvantisPosition(params: ClosePositionParams): Promi
     error?: string;
 }>;
 /**
+ * Result type for position fetching - distinguishes between "no positions" and "fetch failed"
+ */
+export interface PositionFetchResult {
+    positions: Array<{
+        pair_index: number;
+        symbol: string;
+        is_long: boolean;
+        collateral: number;
+        position_size?: number;
+        leverage: number;
+        entry_price: number;
+        current_price: number;
+        pnl: number;
+    }>;
+    success: boolean;
+    error?: string;
+}
+/**
+ * Get positions from Avantis with retry logic
+ * Returns both positions and a success flag to distinguish "no positions" from "fetch failed"
+ */
+export declare function getAvantisPositionsWithStatus(privateKey: string, maxRetries?: number): Promise<PositionFetchResult>;
+/**
  * Get positions from Avantis
+ * Legacy wrapper function for backward compatibility
  */
 export declare function getAvantisPositions(privateKey: string): Promise<Array<{
     pair_index: number;

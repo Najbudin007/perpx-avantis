@@ -44,6 +44,9 @@ export declare class WebTradingBot {
     /**
      * Monitor existing positions until they close
      * NO OPENING NEW POSITIONS - ONLY MONITORING
+     *
+     * CRITICAL: Do NOT return to IDLE when position fetch fails/times out!
+     * Only return to IDLE when we have CONFIRMED that positions are closed.
      */
     private monitorPositionsUntilClose;
     /**

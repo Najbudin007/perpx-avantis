@@ -1427,10 +1427,11 @@ async def get_all_open_trades_for_trader(
         """Direct read without get_open_trade_full to avoid rate limits."""
         return storage.functions.openTrades(trader_address, p_idx, t_idx).call()
 
-    # Priority pairs - check the most common ones first (ETH=0, BTC=1)
-    # Only scan first 15 pairs for speed (covers most common assets)
-    priority_pairs = [0, 1, 2, 3, 4, 5]
-    other_pairs = [i for i in range(min(max_pairs, 15)) if i not in priority_pairs]
+    # Priority pairs - check the most common ones first (BTC=0, ETH=1)
+    # Then scan ALL pairs up to max_pairs to find all positions including newer assets
+    # CRITICAL: Do NOT limit to 15 pairs - newer assets like WIF (25) would be missed!
+    priority_pairs = [0, 1, 2, 3, 4, 5, 25]  # BTC, ETH, SOL, AVAX, BNB, ARB, WIF
+    other_pairs = [i for i in range(max_pairs) if i not in priority_pairs]
     all_pairs = priority_pairs + other_pairs
 
     # For each pair, use openTradesCount to know how many indices to look at

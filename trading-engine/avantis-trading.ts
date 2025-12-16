@@ -271,6 +271,8 @@ function getPairIndexForSymbol(symbol: string): number | undefined {
   // IMPORTANT: Do NOT include symbols that are not actually supported on
   // the current Avantis deployment (e.g. ATOM on Base mainnet), otherwise
   // the bot may try to trade unsupported pairs.
+  //
+  // CRITICAL: WIF is at index 25 (verified from transaction logs), NOT 14!
   const symbolToPairIndex: Record<string, number> = {
     BTC: 0,
     ETH: 1,
@@ -286,10 +288,25 @@ function getPairIndexForSymbol(symbol: string): number | undefined {
     FET: 11,
     SUI: 12,
     JUP: 13,
-    WIF: 14,
+    MATIC: 14,  // MATIC/POL is at 14
     WLD: 15,
     TAO: 16,
     EIGEN: 17,
+    // Additional pairs at higher indices
+    UNI: 18,
+    ATOM: 19,
+    DOT: 20,
+    ADA: 21,
+    XRP: 22,
+    MKR: 23,
+    LTC: 24,
+    WIF: 25,   // WIF is at index 25 (verified from transaction logs)
+    PEPE: 26,
+    BONK: 27,
+    RENDER: 28,
+    INJ: 29,
+    SEI: 30,
+    TIA: 31,
   };
 
   const upperSymbol = symbol.toUpperCase().trim() as keyof typeof symbolToPairIndex;
@@ -875,7 +892,121 @@ export async function closeAvantisPosition(params: ClosePositionParams): Promise
 }
 
 /**
+ * Result type for position fetching - distinguishes between "no positions" and "fetch failed"
+ */
+export interface PositionFetchResult {
+  positions: Array<{
+    pair_index: number;
+    symbol: string;
+    is_long: boolean;
+    collateral: number;
+    position_size?: number;
+    leverage: number;
+    entry_price: number;
+    current_price: number;
+    pnl: number;
+  }>;
+  success: boolean;  // true if fetch succeeded, false if timeout/error
+  error?: string;
+}
+
+/**
+ * Get positions from Avantis with retry logic
+ * Returns both positions and a success flag to distinguish "no positions" from "fetch failed"
+ */
+export async function getAvantisPositionsWithStatus(privateKey: string, maxRetries: number = 3): Promise<PositionFetchResult> {
+  const avantisApiUrl = getAvantisApiUrl();
+  const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Add timeout to prevent hanging when Avantis service is down
+      const controller = new AbortController();
+      const timeoutMs = 45000 + (attempt * 10000); // Increase timeout with each retry: 45s, 55s, 65s
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+      
+      try {
+        const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          console.error(`[AVANTIS] Failed to get positions (attempt ${attempt + 1}/${maxRetries}): ${response.status} ${response.statusText}`);
+          if (attempt < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
+            continue;
+          }
+          return { positions: [], success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+        }
+
+        const result = await response.json() as { positions?: Array<{
+          pair_index: number;
+          symbol: string;
+          is_long: boolean;
+          collateral: number;
+          leverage: number;
+          entry_price: number;
+          current_price: number;
+          pnl: number;
+        }>, count?: number };
+        
+        // Successfully fetched - return with success=true
+        return { positions: result.positions || [], success: true };
+        
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        
+        const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
+        const isTimeout = fetchError instanceof Error && 
+          (fetchError.name === 'AbortError' || errorMessage.includes('timeout'));
+        const isConnectionError = errorMessage.includes('ECONNREFUSED') || 
+          errorMessage.includes('other side closed') ||
+          errorMessage.includes('ETIMEDOUT');
+        
+        if (isTimeout || isConnectionError) {
+          console.warn(`[AVANTIS] ⚠️ Position fetch ${isTimeout ? 'timed out' : 'connection failed'} (attempt ${attempt + 1}/${maxRetries})`);
+          if (attempt < maxRetries - 1) {
+            const delay = 3000 * (attempt + 1); // 3s, 6s, 9s
+            console.log(`[AVANTIS] ⏳ Retrying in ${delay / 1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+        } else {
+          console.error(`[AVANTIS] Error fetching positions (attempt ${attempt + 1}/${maxRetries}):`, errorMessage);
+          if (attempt < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
+            continue;
+          }
+        }
+        
+        // All retries exhausted
+        return { positions: [], success: false, error: errorMessage };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[AVANTIS] Unexpected error getting positions (attempt ${attempt + 1}/${maxRetries}):`, error);
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
+        continue;
+      }
+      return { positions: [], success: false, error: errorMessage };
+    }
+  }
+  
+  return { positions: [], success: false, error: 'Max retries exhausted' };
+}
+
+/**
  * Get positions from Avantis
+ * Legacy wrapper function for backward compatibility
  */
 export async function getAvantisPositions(privateKey: string): Promise<Array<{
   pair_index: number;
@@ -888,66 +1019,7 @@ export async function getAvantisPositions(privateKey: string): Promise<Array<{
   current_price: number;
   pnl: number;
 }>> {
-  try {
-    // Remove trailing slash from AVANTIS_API_URL if present
-    const avantisApiUrl = getAvantisApiUrl();
-    const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
-    
-    // Add timeout to prevent hanging when Avantis service is down
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      console.warn(`[AVANTIS] ⚠️ Timeout fetching positions from Avantis service (${baseUrl})`);
-    }, 35000); // 35 second timeout (increased to handle RPC rate limiting and slow responses)
-    
-    try {
-      const response = await fetch(`${baseUrl}/api/positions?private_key=${encodeURIComponent(privateKey)}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        console.error(`[AVANTIS] Failed to get positions: ${response.status} ${response.statusText}`);
-        return [];
-      }
-
-      const result = await response.json() as { positions?: Array<{
-        pair_index: number;
-        symbol: string;
-        is_long: boolean;
-        collateral: number;
-        leverage: number;
-        entry_price: number;
-        current_price: number;
-        pnl: number;
-      }> };
-      return result.positions || [];
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      
-      // Check if it's a timeout or connection error
-      if (fetchError instanceof Error) {
-        if (fetchError.name === 'AbortError' || fetchError.message.includes('timeout')) {
-          console.warn(`[AVANTIS] ⚠️ Timeout fetching positions - Avantis service may be slow or down`);
-          console.warn(`[AVANTIS] ⚠️ Returning empty positions array - trading will continue`);
-        } else if (fetchError.message.includes('ECONNREFUSED') || fetchError.message.includes('other side closed')) {
-          console.warn(`[AVANTIS] ⚠️ Avantis service connection refused or closed`);
-          console.warn(`[AVANTIS] ⚠️ Check if Avantis service is running on ${baseUrl}`);
-          console.warn(`[AVANTIS] ⚠️ Returning empty positions array - trading will continue`);
-        } else {
-          console.error(`[AVANTIS] Error fetching positions:`, fetchError.message);
-        }
-      }
-      return [];
-    }
-  } catch (error) {
-    console.error(`[AVANTIS] Unexpected error getting positions:`, error);
-    return [];
-  }
+  const result = await getAvantisPositionsWithStatus(privateKey, 3);
+  return result.positions;
 }
 

@@ -14,7 +14,7 @@ import {
   account,
   priceFeeds
 } from './hyperliquid';
-import { openAvantisPositionSafe, getAvantisPositions } from '../avantis-trading';
+import { openAvantisPositionSafe, getAvantisPositions, getAvantisPositionsWithStatus } from '../avantis-trading';
 
 import { checkAndCloseForTP } from './tpsl';
 import { guessMarketRegime } from './regime';
@@ -300,6 +300,9 @@ export class WebTradingBot {
   /**
    * Monitor existing positions until they close
    * NO OPENING NEW POSITIONS - ONLY MONITORING
+   * 
+   * CRITICAL: Do NOT return to IDLE when position fetch fails/times out!
+   * Only return to IDLE when we have CONFIRMED that positions are closed.
    */
   private async monitorPositionsUntilClose(): Promise<TradingResult> {
     if (!this.config || !this.config.privateKey) {
@@ -308,16 +311,45 @@ export class WebTradingBot {
 
     const { profitGoal, privateKey } = this.config;
     let monitoringCycle = 0;
+    let consecutiveFailures = 0;
+    let consecutiveEmptyResults = 0;
+    const MAX_CONSECUTIVE_FAILURES = 20; // Allow up to 20 consecutive failures before giving up
+    const MAX_CONSECUTIVE_EMPTY = 5; // Require 5 consecutive empty results to confirm position closed
+    let lastKnownPositionCount = this.openPositions; // Remember last known position count
 
     log('EXEC_BOT', `📊 Monitoring mode: Checking positions every ${MONITORING_INTERVAL_MS / 1000}s`);
     log('EXEC_BOT', `🛑 NO NEW POSITIONS WILL BE OPENED - MONITORING ONLY`);
+    log('EXEC_BOT', `🔒 Will require ${MAX_CONSECUTIVE_EMPTY} consecutive empty results to confirm position closed`);
 
     while (this.isRunning && !this.shouldStop && monitoringCycle < MAX_MONITORING_CYCLES) {
       monitoringCycle++;
       
       try {
-        // Get current positions
-        const positions = await getAvantisPositions(privateKey);
+        // Get current positions with status (distinguishes between "no positions" and "fetch failed")
+        const result = await getAvantisPositionsWithStatus(privateKey, 3);
+        
+        // Check if fetch failed
+        if (!result.success) {
+          consecutiveFailures++;
+          consecutiveEmptyResults = 0; // Reset empty counter on failure
+          log('WARN', `[Cycle ${monitoringCycle}] Position fetch failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${result.error}`);
+          
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            log('ERROR', `❌ Too many consecutive failures (${consecutiveFailures}) - Returning to IDLE`);
+            log('ERROR', `⚠️ Position may still be open! Check Avantis dashboard manually.`);
+            return { shouldRestart: false, reason: 'fetch_failures', pnl: this.pnl, finalStatus: 'error' };
+          }
+          
+          // Continue monitoring - don't return to IDLE on failure
+          log('EXEC_BOT', `⏳ Fetch failed, continuing to monitor (last known positions: ${lastKnownPositionCount})`);
+          await delay(MONITORING_INTERVAL_MS);
+          continue;
+        }
+        
+        // Fetch succeeded - reset failure counter
+        consecutiveFailures = 0;
+        
+        const positions = result.positions;
         this.openPositions = positions.length;
         
         // Calculate total PnL
@@ -326,11 +358,27 @@ export class WebTradingBot {
         this.cycle = monitoringCycle;
 
         if (positions.length === 0) {
-          log('EXEC_BOT', `✅ All positions closed - Returning to IDLE`);
-          log('EXEC_BOT', `Final PnL: $${totalPnL.toFixed(2)}`);
-          log('EXEC_BOT', `========================================`);
-          return { shouldRestart: false, reason: 'position_closed', pnl: totalPnL, finalStatus: 'completed' };
+          consecutiveEmptyResults++;
+          log('EXEC_BOT', `[Cycle ${monitoringCycle}] No positions found (${consecutiveEmptyResults}/${MAX_CONSECUTIVE_EMPTY} confirmations needed)`);
+          
+          // CRITICAL: Only return to IDLE after multiple consecutive empty results
+          // This prevents false "position closed" due to RPC inconsistencies
+          if (consecutiveEmptyResults >= MAX_CONSECUTIVE_EMPTY) {
+            log('EXEC_BOT', `✅ Position closure confirmed after ${consecutiveEmptyResults} consecutive empty results`);
+            log('EXEC_BOT', `✅ All positions closed - Returning to IDLE`);
+            log('EXEC_BOT', `Final PnL: $${totalPnL.toFixed(2)}`);
+            log('EXEC_BOT', `========================================`);
+            return { shouldRestart: false, reason: 'position_closed', pnl: totalPnL, finalStatus: 'completed' };
+          }
+          
+          // Not enough confirmations yet - keep monitoring
+          await delay(MONITORING_INTERVAL_MS);
+          continue;
         }
+        
+        // We have positions - reset empty counter and update last known count
+        consecutiveEmptyResults = 0;
+        lastKnownPositionCount = positions.length;
 
         log('EXEC_BOT', `[Cycle ${monitoringCycle}] Open: ${positions.length} | PnL: $${totalPnL.toFixed(2)}`);
 
@@ -346,15 +394,24 @@ export class WebTradingBot {
 
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        log('ERROR', `Error in monitoring cycle: ${errorMessage}`);
+        consecutiveFailures++;
+        consecutiveEmptyResults = 0;
+        log('ERROR', `Error in monitoring cycle ${monitoringCycle} (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${errorMessage}`);
+        
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          log('ERROR', `❌ Too many consecutive errors - Returning to IDLE`);
+          return { shouldRestart: false, reason: 'monitoring_errors', pnl: this.pnl, finalStatus: 'error' };
+        }
+        
         await delay(MONITORING_INTERVAL_MS);
       }
     }
 
     // Max monitoring cycles reached
-    const finalPnL = await getAvantisPositions(privateKey)
-      .then(pos => pos.reduce((sum, p) => sum + (p.pnl || 0), 0))
-      .catch(() => 0);
+    const finalResult = await getAvantisPositionsWithStatus(privateKey, 3);
+    const finalPnL = finalResult.success 
+      ? finalResult.positions.reduce((sum, p) => sum + (p.pnl || 0), 0)
+      : this.pnl;
 
     log('EXEC_BOT', `⏱️ Max monitoring cycles reached - Returning to IDLE`);
     return { shouldRestart: false, reason: 'max_monitoring_cycles', pnl: finalPnL, finalStatus: 'completed' };

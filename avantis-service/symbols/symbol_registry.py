@@ -35,22 +35,40 @@ except Exception:  # pragma: no cover - SDK may not be installed in all envs
 # ----------------------------------------------------------------------
 
 SYMBOL_TO_PAIR_INDEX: Dict[str, int] = {
+    # Core pairs (verified on Avantis Base mainnet)
     "BTC": 0,   # BTC/USD pair index (default)
     "ETH": 1,   # ETH/USD pair index
     "SOL": 2,
     "AVAX": 3,
-    "MATIC": 4,
+    "BNB": 4,   # Note: BNB is at index 4 on Avantis Base mainnet
     "ARB": 5,
-    "OP": 6,
-    "LINK": 7,
-    "UNI": 8,
+    "DOGE": 6,
+    "OP": 7,
+    "LINK": 8,
     "AAVE": 9,
-    "ATOM": 10,
-    "DOT": 11,
-    "ADA": 12,
-    "XRP": 13,
-    "DOGE": 14,
-    "BNB": 15,
+    "NEAR": 10,
+    "FET": 11,
+    "SUI": 12,
+    "JUP": 13,
+    "MATIC": 14,  # MATIC/POL
+    "WLD": 15,
+    "TAO": 16,
+    "EIGEN": 17,
+    # Additional pairs
+    "UNI": 18,
+    "ATOM": 19,
+    "DOT": 20,
+    "ADA": 21,
+    "XRP": 22,
+    "MKR": 23,
+    "LTC": 24,
+    "WIF": 25,   # WIF is at index 25 (verified from transaction logs)
+    "PEPE": 26,
+    "BONK": 27,
+    "RENDER": 28,
+    "INJ": 29,
+    "SEI": 30,
+    "TIA": 31,
 }
 
 # Reverse mapping for pair index to symbol
