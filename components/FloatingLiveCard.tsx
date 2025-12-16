@@ -18,8 +18,8 @@ interface FloatingLiveCardProps {
 }
 
 export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: FloatingLiveCardProps) {
-  const { positionData } = usePositions()
-  const { tradingSession, feePending, feePaidTime } = useTradingSession()
+  const { positionData, isLoading: positionsLoading } = usePositions()
+  const { tradingSession } = useTradingSession()
   const { avantisBalance } = useIntegratedWallet()
   const { logs } = useTradingActivityLogs()
   const { getTradingSessions } = useTrading()
@@ -50,8 +50,18 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
     return () => clearInterval(interval)
   }, [token, getTradingSessions])
   
-  // Show if there's an active session (from state or API)
-  const shouldShow = (tradingSession && tradingSession.status === 'running') || hasActiveSession
+  // Only show if there are actually open positions
+  // This prevents showing the card when all positions are closed (even if session status is stale)
+  const hasOpenPositions = (positionData?.openPositions || 0) > 0
+  
+  // Also check session positions as fallback (only if positionData is still loading)
+  // Prefer positionData over session data since positionData is more up-to-date
+  const sessionOpenPositions = (tradingSession?.openPositions || activeSessionFromAPI?.openPositions || activeSessionFromAPI?.positions || 0)
+  const hasSessionPositions = sessionOpenPositions > 0
+  
+  // Show only if there are open positions
+  // Prefer positionData (most accurate), only use session data if positionData is still loading
+  const shouldShow = hasOpenPositions || (hasSessionPositions && positionsLoading && positionData === null)
   
   if (!shouldShow || !isVisible) {
     return null
@@ -112,22 +122,6 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
                 ${avantisBalance.toFixed(2)}
               </span>
             </div>
-            {feePending && !feePending.paid && (
-              <div className="flex items-center justify-between">
-                <span className="text-[#facc15] text-[10px]">Fee:</span>
-                <span className="text-[#facc15] text-[10px] font-semibold">
-                  ${(feePending.amount * 0.01).toFixed(2)} pending
-                </span>
-              </div>
-            )}
-            {feePaidTime && (
-              <div className="flex items-center justify-between">
-                <span className="text-[#27c47d] text-[10px]">Fee:</span>
-                <span className="text-[#27c47d] text-[10px] font-semibold">
-                  Paid ✓
-                </span>
-              </div>
-            )}
             <div className="flex items-center justify-between">
               <span className="text-[#9ca3af]">Positions:</span>
               <span className="text-white font-semibold">
@@ -162,14 +156,6 @@ export function FloatingLiveCard({ position = { right: 16, bottom: 80 } }: Float
                       Analyzing BTC, ETH signals
                     </span>
                   </div>
-                  {feePending && !feePending.paid && (
-                    <div className="flex items-start space-x-1.5">
-                      <span className="text-[#27c47d]">💰</span>
-                      <span className="text-[#27c47d] flex-1 text-[9px]">
-                        Fee will be paid after 1st position
-                      </span>
-                    </div>
-                  )}
                   <div className="flex items-start space-x-1.5 mt-2">
                     <span className="text-[#9ca3af]">ℹ️</span>
                     <span className="text-[#9ca3af] flex-1 text-[9px]">

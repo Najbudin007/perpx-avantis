@@ -15,7 +15,7 @@ interface LiveTradingLogModalProps {
 
 export function LiveTradingLogModal({ isOpen, onClose }: LiveTradingLogModalProps) {
   const { positionData, isLoading, fetchPositions } = usePositions()
-  const { tradingSession, refreshSessionStatus, feePaidTime, positionWarning, feePending } = useTradingSession()
+  const { tradingSession, refreshSessionStatus, positionWarning } = useTradingSession()
   const { avantisBalance } = useIntegratedWallet()
   const { logs } = useTradingActivityLogs()
   const logEndRef = useRef<HTMLDivElement>(null)
@@ -145,31 +145,11 @@ export function LiveTradingLogModal({ isOpen, onClose }: LiveTradingLogModalProp
                 ${tradingSession.config?.profitGoal || '0'}
               </span>
             </div>
-            {feePending && !feePending.paid && (
+            {positionWarning && (
               <div className="mt-2 p-2 bg-[#facc15]/10 border border-[#facc15]/30 rounded-lg">
-                <div className="text-[11px] text-[#facc15] font-medium">
-                  💰 Fee (${(feePending.amount * 0.01).toFixed(2)}) will be deducted when first position opens
+                <div className="text-[10px] text-[#9ca3af]">
+                  {positionWarning}
                 </div>
-                {positionWarning && (
-                  <div className="text-[10px] text-[#9ca3af] mt-1">
-                    {positionWarning}
-                  </div>
-                )}
-              </div>
-            )}
-            {feePaidTime && (
-              <div className="mt-2 p-2 bg-[#27c47d]/10 border border-[#27c47d]/30 rounded-lg">
-                <div className="text-[11px] text-[#27c47d] font-medium">
-                  ✅ Fee paid successfully after position opened
-                </div>
-                <div className="text-[10px] text-[#9ca3af] mt-1">
-                  Paid at: {feePaidTime.toLocaleTimeString()}
-                </div>
-              </div>
-            )}
-            {!feePending && !feePaidTime && (
-              <div className="mt-2 text-[10px] text-[#6b7280]">
-                ⚠️ Trading is active. Fee will be deducted when position opens.
               </div>
             )}
           </div>

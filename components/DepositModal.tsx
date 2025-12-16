@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Modal } from "@/components/ui/modal"
@@ -70,6 +70,52 @@ export function DepositModal({
   const explorerBaseUrl = process.env.NEXT_PUBLIC_AVANTIS_NETWORK === 'base-testnet'
     ? 'https://sepolia.basescan.org'
     : 'https://basescan.org'
+
+  // Format balance intelligently based on value
+  const formatBalance = useCallback((balanceStr: string): string => {
+    // Extract number and symbol from balance string (e.g., "0.000026149449898033 ETH" or "2.0000 USDC")
+    const parts = balanceStr.trim().split(/\s+/)
+    const numberStr = parts[0]
+    const symbol = parts.slice(1).join(' ') || ''
+    
+    const numValue = parseFloat(numberStr)
+    
+    // Handle invalid numbers
+    if (isNaN(numValue) || numValue === 0) {
+      return symbol ? `0 ${symbol}` : '0'
+    }
+    
+    let formatted: string
+    
+    if (numValue < 0.000001) {
+      // Very small values: show up to 8 significant digits
+      formatted = numValue.toPrecision(8)
+    } else if (numValue < 0.01) {
+      // Small values: show up to 6 decimal places
+      formatted = numValue.toFixed(6)
+    } else if (numValue < 1) {
+      // Values less than 1: show up to 4 decimal places
+      formatted = numValue.toFixed(4)
+    } else if (numValue < 1000) {
+      // Medium values: show 2-4 decimal places
+      formatted = numValue.toFixed(4)
+    } else {
+      // Large values: show 2 decimal places with comma separators
+      formatted = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(numValue)
+    }
+    
+    // Remove trailing zeros after decimal point (but keep at least one digit after decimal if there was one)
+    formatted = formatted.replace(/\.?0+$/, '')
+    // If we removed everything after decimal, ensure we have at least .0 for values < 1
+    if (numValue < 1 && !formatted.includes('.')) {
+      formatted = numValue.toFixed(1).replace(/\.?0+$/, '')
+    }
+    
+    return symbol ? `${formatted} ${symbol}` : formatted
+  }, [])
 
   useEffect(() => {
     // Listen for deposit-completed event to set success state
@@ -213,7 +259,7 @@ export function DepositModal({
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-white text-xs font-semibold">{holding.balanceFormatted}</p>
+                      <p className="text-white text-xs font-semibold">{formatBalance(holding.balanceFormatted)}</p>
                       <p className="text-[#9ca3af] text-[10px]">${holding.valueUSD.toFixed(2)}</p>
                     </div>
                   </div>

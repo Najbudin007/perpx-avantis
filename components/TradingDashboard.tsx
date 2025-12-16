@@ -200,19 +200,11 @@ export function TradingDashboard() {
                 sessionId={sessions[0].id}
                 onPositionOpened={() => {
                   loadSessions();
-                  addToast({
-                    type: 'success',
-                    title: 'Position opened',
-                    message: 'Your position is being processed. Check positions in a moment.'
-                  });
+                  // Toast is already shown in BaseAccountTradingPanel, no need to duplicate
                 }}
                 onPositionClosed={() => {
                   loadSessions();
-                  addToast({
-                    type: 'success',
-                    title: 'Position closed',
-                    message: 'Your position is being closed. Check positions in a moment.'
-                  });
+                  // Toast is already shown in BaseAccountTradingPanel, no need to duplicate
                 }}
               />
             )}

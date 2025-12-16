@@ -170,20 +170,34 @@ export function useTradingSession() {
     setError(null);
 
     try {
-      // Get the trading amount for fee calculation (will be paid after position opens)
+      // Get the trading amount for fee calculation (will be paid when StartTrading is clicked)
       const tradingAmount = config.maxBudget || config.investmentAmount || 50;
       
-      // Note: Fee will be paid AFTER first position is successfully opened
-      onProgress?.('fee', `Fee ($${(tradingAmount * 0.01).toFixed(2)}) will be deducted after position opens`);
-      console.log(`[useTradingSession] Fee will be paid after position opens: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
+      // Step 1: Pay commission fee BEFORE starting trading session (silently, no toast)
+      console.log(`[useTradingSession] Paying commission fee: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
+      
+      try {
+        const feeResult = await payTradingFee(tradingAmount);
+        if (feeResult.success) {
+          console.log(`[useTradingSession] ✅ Commission fee paid successfully: ${feeResult.amount} ${feeResult.currency} (tx: ${feeResult.transactionHash})`);
+          setFeePaidTime(new Date());
+          setFeePending(null); // Clear pending fee since it's already paid
+          // No toast message - fee payment is silent
+        } else {
+          throw new Error(feeResult.error || 'Failed to pay commission fee');
+        }
+      } catch (feeError) {
+        console.error(`[useTradingSession] ❌ Failed to pay commission fee:`, feeError);
+        throw new Error(`Failed to pay commission fee: ${feeError instanceof Error ? feeError.message : 'Unknown error'}`);
+      }
 
-      // Step 1: Calculate leverage based on balance if not specified
+      // Step 2: Calculate leverage based on balance if not specified
       const budget = config.maxBudget || config.investmentAmount || 50;
       const calculatedLeverage = config.leverage 
         ? config.leverage 
         : calculateLeverageFromBalance(budget, config.leverage);
       
-      // Step 2: Get trading wallet with private key from API
+      // Step 3: Get trading wallet with private key from API
       onProgress?.('session', 'Retrieving wallet credentials...');
       let walletWithKey: any = null;
       
@@ -230,7 +244,7 @@ export function useTradingSession() {
         throw new Error(`Failed to retrieve wallet credentials: ${walletError instanceof Error ? walletError.message : 'Unknown error'}`);
       }
       
-      // Step 3: Start trading session (this should return quickly)
+      // Step 4: Start trading session (this should return quickly)
       onProgress?.('session', 'Starting trading session...');
       
       try {
@@ -295,15 +309,14 @@ export function useTradingSession() {
 
         setTradingSession(sessionState);
         
-        // Store fee amount to be paid after position opens
-        setFeePending({ amount: tradingAmount, paid: false });
-        setFeePaidTime(null);
+        // Fee already paid, clear any pending state
+        setFeePending(null);
         setPositionWarning(null);
         
         // Use setTimeout to prevent crash when showing completion notification
         setTimeout(() => {
           try {
-            onProgress?.('complete', '✅ Trading session ready! Fee will be deducted when first position opens.');
+            onProgress?.('complete', '✅ Trading session started successfully!');
           } catch (progressError) {
             console.error('[useTradingSession] Error in complete progress callback:', progressError);
           }
@@ -344,36 +357,6 @@ export function useTradingSession() {
   // Track previous position count to detect new positions
   const previousPositionCountRef = useRef<number>(0);
   const checkPositionsInProgressRef = useRef<boolean>(false);
-  const feePaymentInProgressRef = useRef<boolean>(false);
-
-  // Pay fee when first position opens (using ref to avoid infinite loop)
-  const payFeeOnPositionOpen = useCallback(async (tradingAmount: number, currentFeePending: { amount: number; paid: boolean } | null) => {
-    if (currentFeePending?.paid || feePaymentInProgressRef.current) {
-      return; // Fee already paid or payment in progress
-    }
-
-    feePaymentInProgressRef.current = true;
-    
-    try {
-      console.log(`[useTradingSession] Position opened! Paying fee: 1% of $${tradingAmount} = $${(tradingAmount * 0.01).toFixed(2)}`);
-      const feeResult = await payTradingFee(tradingAmount);
-      
-      if (feeResult.success) {
-        setFeePending(prev => prev ? { ...prev, paid: true } : null);
-        setFeePaidTime(new Date());
-        setPositionWarning(null);
-        console.log(`[useTradingSession] ✅ Fee paid successfully after position opened: ${feeResult.amount} ${feeResult.currency} (tx: ${feeResult.transactionHash})`);
-      } else {
-        console.error(`[useTradingSession] ❌ Failed to pay fee after position opened: ${feeResult.error}`);
-        setPositionWarning(`⚠️ Position opened but fee payment failed: ${feeResult.error}`);
-      }
-    } catch (error) {
-      console.error(`[useTradingSession] ❌ Error paying fee after position opened:`, error);
-      setPositionWarning(`⚠️ Position opened but fee payment error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      feePaymentInProgressRef.current = false;
-    }
-  }, [payTradingFee]);
 
   // Update session with position data - FIXED to prevent infinite loop
   useEffect(() => {
@@ -397,13 +380,6 @@ export function useTradingSession() {
         positions: currentPositions,
         // Don't increment cycle on every update to prevent re-renders
       } : null);
-    }
-    
-    // Pay fee when first position opens (transition from 0 to >0)
-    if (currentPositions > 0 && previousPositions === 0 && feePending && !feePending.paid) {
-      const tradingAmount = tradingSession.config?.maxBudget || tradingSession.config?.totalBudget || feePending.amount;
-      console.log(`[useTradingSession] First position opened! Paying fee for amount: $${tradingAmount}`);
-      payFeeOnPositionOpen(tradingAmount, feePending);
     }
     
     // Dispatch event when position count increases (position opened)
@@ -438,9 +414,9 @@ export function useTradingSession() {
         return () => clearInterval(interval);
       }, [tradingSession?.id, tradingSession?.status, refreshSessionStatus]); // Include refreshSessionStatus but it's now stable
 
-      // Monitor for positions opening (no fee payment needed - fee is paid after position opens)
+      // Monitor for positions opening
       useEffect(() => {
-        if (!tradingSession || tradingSession.status !== 'running' || feePending?.paid) {
+        if (!tradingSession || tradingSession.status !== 'running') {
           return;
         }
 
@@ -451,10 +427,10 @@ export function useTradingSession() {
           
           try {
             await fetchPositions(true);
-            const elapsedSeconds = feePending ? Math.floor((Date.now() - (tradingSession.startTime?.getTime() || Date.now())) / 1000) : 0;
+            const elapsedSeconds = Math.floor((Date.now() - (tradingSession.startTime?.getTime() || Date.now())) / 1000);
             
             // Show status messages while waiting for first position
-            if (positionData?.openPositions === 0 && feePending && !feePending.paid) {
+            if (positionData?.openPositions === 0) {
               if (elapsedSeconds >= 120) {
                 setPositionWarning('⚠️ Still waiting for position to open after 2 minutes. Bot is scanning markets...');
               } else if (elapsedSeconds >= 60) {
@@ -475,7 +451,7 @@ export function useTradingSession() {
         const interval = setInterval(checkPositions, 15000);
 
         return () => clearInterval(interval);
-      }, [tradingSession?.id, tradingSession?.status, feePending?.paid, positionData?.openPositions]); // Removed fetchPositions from deps
+      }, [tradingSession?.id, tradingSession?.status, positionData?.openPositions]); // Removed fetchPositions from deps
 
   return {
     tradingSession,

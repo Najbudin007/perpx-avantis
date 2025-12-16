@@ -272,6 +272,7 @@ const TradingCard = ({
   // Parse investment amount for validation - use useMemo to avoid recalculation on every render
   const investmentNum = useMemo(() => parseFloat(investmentAmount) || 0, [investmentAmount])
   const targetProfitPercentNum = useMemo(() => parseFloat(targetProfitPercent) || 0, [targetProfitPercent])
+  const maxPositionsNum = useMemo(() => parseInt(maxPositions) || 0, [maxPositions])
   
   // Calculate target profit USD from percent for validation and trading
   const targetProfitNum = useMemo(() => {
@@ -359,6 +360,52 @@ const TradingCard = ({
 
   const router = useRouter()
 
+  // Format balance intelligently based on value
+  const formatBalance = useCallback((balanceStr: string): string => {
+    // Extract number and symbol from balance string (e.g., "0.000026149449898033 ETH" or "2.0000 USDC")
+    const parts = balanceStr.trim().split(/\s+/)
+    const numberStr = parts[0]
+    const symbol = parts.slice(1).join(' ') || ''
+    
+    const numValue = parseFloat(numberStr)
+    
+    // Handle invalid numbers
+    if (isNaN(numValue) || numValue === 0) {
+      return symbol ? `0 ${symbol}` : '0'
+    }
+    
+    let formatted: string
+    
+    if (numValue < 0.000001) {
+      // Very small values: show up to 8 significant digits
+      formatted = numValue.toPrecision(8)
+    } else if (numValue < 0.01) {
+      // Small values: show up to 6 decimal places
+      formatted = numValue.toFixed(6)
+    } else if (numValue < 1) {
+      // Values less than 1: show up to 4 decimal places
+      formatted = numValue.toFixed(4)
+    } else if (numValue < 1000) {
+      // Medium values: show 2-4 decimal places
+      formatted = numValue.toFixed(4)
+    } else {
+      // Large values: show 2 decimal places with comma separators
+      formatted = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(numValue)
+    }
+    
+    // Remove trailing zeros after decimal point (but keep at least one digit after decimal if there was one)
+    formatted = formatted.replace(/\.?0+$/, '')
+    // If we removed everything after decimal, ensure we have at least .0 for values < 1
+    if (numValue < 1 && !formatted.includes('.')) {
+      formatted = numValue.toFixed(1).replace(/\.?0+$/, '')
+    }
+    
+    return symbol ? `${formatted} ${symbol}` : formatted
+  }, [])
+
   useEffect(() => {
     if (recentDepositHash) {
       setHasSuccessfulDeposit(true)
@@ -386,9 +433,11 @@ const TradingCard = ({
       !investmentAmount || 
       targetProfitPercentNum <= 0 || 
       targetProfitPercentNum > 100 ||
-      !isInvestmentValid
+      !isInvestmentValid ||
+      maxPositionsNum <= 0 || // Max positions must be greater than 0
+      maxPositionsNum > 10    // Max positions cannot exceed 10
     )
-  }, [isTrading, hasActivePositions, isTargetProfitTooHigh, targetProfitPercent, investmentAmount, targetProfitPercentNum, isInvestmentValid])
+  }, [isTrading, hasActivePositions, isTargetProfitTooHigh, targetProfitPercent, investmentAmount, targetProfitPercentNum, isInvestmentValid, maxPositionsNum])
 
   // Guard against duplicate session starts
   const isStartingTradingRef = useRef(false)
@@ -432,6 +481,26 @@ const TradingCard = ({
         type: 'error',
         title: 'Invalid Investment',
         message: 'Investment amount must be greater than 0.'
+      })
+      return;
+    }
+    
+    // Validate max positions
+    const maxPositionsNum = parseInt(maxPositions) || 0
+    if (isNaN(maxPositionsNum) || maxPositionsNum <= 0) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Max Positions',
+        message: 'Max number of positions must be greater than 0.'
+      })
+      return;
+    }
+    
+    if (maxPositionsNum > 10) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Max Positions',
+        message: 'Max number of positions cannot exceed 10.'
       })
       return;
     }
@@ -522,7 +591,7 @@ const TradingCard = ({
         investmentAmount: investmentNum,
         profitGoal: profitNum,
         targetProfit: profitNum,
-        maxPerSession: parseInt(maxPositions) || 1,
+        maxPerSession: maxPositionsNum, // Use validated value instead of defaulting to 1
         lossThreshold: parseFloat(lossThreshold) || 10,
         // Pass wallet details so backend doesn't reject
         walletAddress: tradingWalletAddress || baseAccountAddress || primaryWallet?.address || ''
@@ -735,7 +804,9 @@ const TradingCard = ({
                   type="number"
                   value={maxPositions}
                   onChange={(e) => setMaxPositions(e.target.value)}
-                  className="bg-[#2a2a2a] border-[#444] text-white text-sm"
+                  className={`bg-[#2a2a2a] border-[#444] text-white text-sm ${
+                    (maxPositionsNum <= 0 || maxPositionsNum > 10) && maxPositions !== '' ? 'border-red-500' : ''
+                  }`}
                   placeholder="1"
                   min="1"
                   max="10"
@@ -791,6 +862,25 @@ const TradingCard = ({
                   <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                 </svg>
                 Maximum investment is ${MAX_INVESTMENT.toFixed(2)} (balance minus 1% fee)
+              </div>
+            )}
+            
+            {/* Max Positions Validation */}
+            {maxPositionsNum <= 0 && maxPositions !== '' && (
+              <div className="text-red-400 text-xs flex items-center gap-1">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                Max number of positions must be greater than 0.
+              </div>
+            )}
+            
+            {maxPositionsNum > 10 && (
+              <div className="text-red-400 text-xs flex items-center gap-1">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                Max number of positions cannot exceed 10.
               </div>
             )}
             
@@ -890,7 +980,7 @@ const TradingCard = ({
                         <span className="text-yellow-100 text-xs font-medium">{holding.token.symbol}</span>
                       </div>
                       <div className="text-right">
-                        <p className="text-yellow-100 text-xs font-semibold">{holding.balanceFormatted}</p>
+                        <p className="text-yellow-100 text-xs font-semibold">{formatBalance(holding.balanceFormatted)}</p>
                       </div>
                     </div>
                   ))}
@@ -1401,12 +1491,12 @@ const WalletInfoCard = ({
         
         <div className="pt-2 border-t border-[#374151]">
           <div className="space-y-3">
-            <p className="text-[#9ca3af] text-xs">
+            {/* <p className="text-[#9ca3af] text-xs">
               {avantisBalance > 0
                 ? `Your backend trading wallet is ready with a balance of $${avantisBalance.toFixed(2)}. This wallet is used for automated trading.`
                 : 'Your backend trading wallet is ready but has no funds. Add funds to start trading.'
               }
-            </p>
+            </p> */}
             
             {/* {walletToDisplay.privateKey && (
               <div className="mt-2 p-2 bg-blue-900/20 border border-blue-500/50 rounded">
@@ -1418,7 +1508,7 @@ const WalletInfoCard = ({
             )} */}
             
             {/* Debug Info Section */}
-            <div className="mt-3 p-2 bg-[#1f2937] border border-[#374151] rounded text-xs">
+            {/* <div className="mt-3 p-2 bg-[#1f2937] border border-[#374151] rounded text-xs">
               <p className="text-[#9ca3af] font-semibold mb-1">Trading Vault Status:</p>
               <div className="space-y-1 text-[#6b7280]">
                 <div className="flex justify-between">
@@ -1448,7 +1538,7 @@ const WalletInfoCard = ({
                   </div>
                 )}
               </div>
-            </div>
+            </div> */}
 
             {/* Deposit Button - Only show if wallet exists */}
             {walletToDisplay.address && (
@@ -2051,6 +2141,52 @@ const HoldingsSection = ({ holdings }: { holdings: Array<{
     }).format(value)
   }, [])
 
+  // Format balance intelligently based on value
+  const formatBalance = useCallback((balanceStr: string): string => {
+    // Extract number and symbol from balance string (e.g., "0.000026149449898033 ETH" or "2.0000 USDC")
+    const parts = balanceStr.trim().split(/\s+/)
+    const numberStr = parts[0]
+    const symbol = parts.slice(1).join(' ') || ''
+    
+    const numValue = parseFloat(numberStr)
+    
+    // Handle invalid numbers
+    if (isNaN(numValue) || numValue === 0) {
+      return symbol ? `0 ${symbol}` : '0'
+    }
+    
+    let formatted: string
+    
+    if (numValue < 0.000001) {
+      // Very small values: show up to 8 significant digits
+      formatted = numValue.toPrecision(8)
+    } else if (numValue < 0.01) {
+      // Small values: show up to 6 decimal places
+      formatted = numValue.toFixed(6)
+    } else if (numValue < 1) {
+      // Values less than 1: show up to 4 decimal places
+      formatted = numValue.toFixed(4)
+    } else if (numValue < 1000) {
+      // Medium values: show 2-4 decimal places
+      formatted = numValue.toFixed(4)
+    } else {
+      // Large values: show 2 decimal places with comma separators
+      formatted = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(numValue)
+    }
+    
+    // Remove trailing zeros after decimal point (but keep at least one digit after decimal if there was one)
+    formatted = formatted.replace(/\.?0+$/, '')
+    // If we removed everything after decimal, ensure we have at least .0 for values < 1
+    if (numValue < 1 && !formatted.includes('.')) {
+      formatted = numValue.toFixed(1).replace(/\.?0+$/, '')
+    }
+    
+    return symbol ? `${formatted} ${symbol}` : formatted
+  }, [])
+
   if (holdings.length === 0) return null
 
   return (
@@ -2077,7 +2213,7 @@ const HoldingsSection = ({ holdings }: { holdings: Array<{
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-white font-semibold text-base sm:text-lg">{holding.balance}</p>
+                  <p className="text-white font-semibold text-base sm:text-lg">{formatBalance(holding.balance)}</p>
                   <p className="text-[#9ca3af] text-sm">{formatValue(holding.valueUSD)}</p>
                 </div>
               </div>
@@ -2180,7 +2316,8 @@ export default function HomePage() {
   // We intentionally do NOT refetch positions here to avoid duplicate fetches and flicker.
   useEffect(() => {
     const handleDepositCompleted = () => {
-      // Refresh balance and positions after deposit
+      // Single refresh after deposit - this is a backup in case the main handler didn't catch it
+      // We don't do multiple refreshes to avoid UI flicker
       refreshBalancesRef.current?.(true)
       // Wait a bit for balance to update, then refresh positions
       setTimeout(() => {
@@ -2655,10 +2792,13 @@ export default function HomePage() {
             // Auto-refresh balance and positions after successful deposit confirmation
             setIsRefreshingBalance(true)
             try {
-              // Wait for blockchain confirmation
-              await new Promise(resolve => setTimeout(resolve, 2000))
+              // Wait for blockchain state to propagate (increased to 7s for Base network)
+              // Base network can take a few seconds for state to fully propagate after confirmation
+              // We wait longer to ensure the balance is available before refreshing - avoids multiple UI updates
+              await new Promise(resolve => setTimeout(resolve, 7000))
               
-              // Refresh balances first
+              // Single refresh after sufficient wait time
+              // This avoids multiple UI updates and provides better UX
               await refreshBalances(true)
               
               // Then refresh positions (deposit might affect available balance for positions)

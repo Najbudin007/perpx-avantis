@@ -833,10 +833,56 @@ async def get_trade_history(
                 close_price = args.get("price", 0)  # Close price from event.args
                 tp = trade_data.get("tp", 0) if trade_data.get("tp", 0) > 0 else None
                 sl = trade_data.get("sl", 0) if trade_data.get("sl", 0) > 0 else None
+                # Calculate position size: use from API if available, otherwise calculate from collateral * leverage
                 position_size_usdc = args.get("positionSizeUSDC", 0)  # Already in USDC (decimal)
+                if position_size_usdc == 0 and collateral > 0 and leverage > 0:
+                    position_size_usdc = collateral * leverage
                 
-                # PnL is at top level of trade_item
-                pnl = trade_item.get("_grossPnl", 0)
+                # Try to get PnL from API response (check multiple possible field names)
+                # Convert to float to handle string values
+                pnl_raw = (
+                    trade_item.get("_grossPnl") or
+                    trade_item.get("grossPnl") or
+                    trade_item.get("pnl") or
+                    trade_item.get("realizedPnl") or
+                    0
+                )
+                try:
+                    pnl = float(pnl_raw) if pnl_raw is not None else 0.0
+                except (ValueError, TypeError):
+                    pnl = 0.0
+                
+                # Always calculate PnL when we have the necessary data to validate/correct API values
+                if open_price > 0 and close_price > 0 and position_size_usdc > 0:
+                    # Calculate PnL using the same formula as open positions
+                    # PnL = (close_price - open_price) / open_price * position_size * direction
+                    price_diff_pct = (close_price - open_price) / open_price
+                    adjusted_price_diff = price_diff_pct if is_long else -price_diff_pct
+                    calculated_pnl = adjusted_price_diff * position_size_usdc
+                    
+                    api_pnl = pnl
+                    
+                    # Use calculated PnL if:
+                    # 1. API PnL is exactly 0 (or very close to 0) AND calculated PnL is significantly different (not close to 0)
+                    #    This catches cases where API incorrectly returns 0.00 for a trade with actual profit/loss
+                    # 2. API PnL is None
+                    # 3. API PnL differs significantly from calculated (>10% difference)
+                    api_pnl_is_zero = abs(pnl) < 0.001  # Consider 0.001 as "zero" to handle floating point
+                    calculated_pnl_is_significant = abs(calculated_pnl) >= 0.01  # At least 1 cent difference
+                    
+                    if pnl is None or (isinstance(pnl, float) and (pnl != pnl)):  # Check for NaN
+                        # API PnL is missing or invalid - use calculated
+                        pnl = calculated_pnl
+                        logger.info(f"📜 [HISTORY] API PnL missing/invalid, using calculated: {calculated_pnl:.2f} for {symbol}")
+                    elif api_pnl_is_zero and calculated_pnl_is_significant:
+                        # API returned 0.00 but calculated shows significant profit/loss - use calculated
+                        pnl = calculated_pnl
+                        logger.info(f"📜 [HISTORY] API PnL was 0.00 but calculated shows {calculated_pnl:.2f}, using calculated for {symbol}")
+                    elif not api_pnl_is_zero and calculated_pnl_is_significant and abs(pnl - calculated_pnl) > abs(calculated_pnl) * 0.1:
+                        # API PnL exists but differs significantly from calculated (>10%) - use calculated
+                        pnl = calculated_pnl
+                        logger.info(f"📜 [HISTORY] API PnL ({api_pnl:.2f}) differs from calculated ({calculated_pnl:.2f}), using calculated for {symbol}")
+                    # Otherwise, trust API PnL (it's close to calculated or both are near zero)
                 
                 # Timestamp - API provides timeStamp (ISO string) at top level, or timestamp (unix) in trade_data
                 time_stamp_str = trade_item.get("timeStamp")  # ISO string like "2025-12-12T16:03:41.000Z"

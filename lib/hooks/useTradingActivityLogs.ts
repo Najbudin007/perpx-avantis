@@ -28,7 +28,7 @@ const SYMBOLS = ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'ARB', 'OP', 'LINK', 'UNI
 const INDICATORS = ['RSI', 'MACD', 'EMA', 'ATR', 'ADX', 'Volume', 'Divergence']
 
 export function useTradingActivityLogs() {
-  const { tradingSession, feePaidTime, positionWarning, feePending } = useTradingSession()
+  const { tradingSession, positionWarning } = useTradingSession()
   const { positionData } = usePositions()
   const { avantisBalance } = useIntegratedWallet()
   const [logs, setLogs] = useState<TradingActivityLog[]>([])
@@ -238,28 +238,10 @@ export function useTradingActivityLogs() {
       message: `📊 Cycle ${currentCycle} complete | Balance: $${avantisBalance.toFixed(2)} | Positions: ${currentPositions}`,
     })
     
-    // Add fee status log
-    if (feePending && !feePending.paid && currentPositions === 0) {
-      const elapsedSeconds = Math.floor((Date.now() - (tradingSession?.startTime?.getTime() || Date.now())) / 1000)
-      if (elapsedSeconds > 10) {
-        newLogs.push({
-          id: `fee-pending-${Date.now()}`,
-          timestamp: new Date(),
-          type: 'status',
-          message: `💰 Fee ($${(feePending.amount * 0.01).toFixed(2)}) pending - will be deducted when position opens`,
-        })
-      }
-    } else if (feePaidTime) {
-      newLogs.push({
-        id: `fee-paid-${Date.now()}`,
-        timestamp: feePaidTime,
-        type: 'status',
-        message: `✅ Fee paid successfully after position opened`,
-      })
-    }
+    // Fee is already paid when StartTrading is clicked, no need to log it
 
     return newLogs
-  }, [tradingSession, positionData, cycleCount, lastPositionCount, avantisBalance, feePending, feePaidTime])
+  }, [tradingSession, positionData, cycleCount, lastPositionCount, avantisBalance])
 
   // Fetch real logs from trading engine API
   useEffect(() => {
@@ -344,7 +326,7 @@ export function useTradingActivityLogs() {
       clearTimeout(firstBatchTimeout)
       clearInterval(interval)
     }
-  }, [tradingSession, generateActivityLogs, positionData, feePending, feePaidTime, useRealLogs])
+  }, [tradingSession, generateActivityLogs, positionData, useRealLogs])
 
   // Generate immediate logs when positions change
   useEffect(() => {

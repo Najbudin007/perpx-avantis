@@ -124,20 +124,8 @@ export async function GET(request: NextRequest) {
         const closePrice = args.price || 0
         const tp = tradeData.tp > 0 ? tradeData.tp : null
         const sl = tradeData.sl > 0 ? tradeData.sl : null
-        const positionSizeUsdc = args.positionSizeUSDC || 0
-        const pnl = tradeItem._grossPnl || 0
         
-        let timestamp = 0
-        if (tradeItem.timeStamp) {
-          try {
-            timestamp = Math.floor(new Date(tradeItem.timeStamp).getTime() / 1000)
-          } catch {
-            timestamp = tradeData.timestamp || 0
-          }
-        } else {
-          timestamp = tradeData.timestamp || 0
-        }
-        
+        // Get symbol early for logging
         const symbolMap: Record<number, string> = {
           0: "ETH",
           1: "BTC",
@@ -157,6 +145,61 @@ export async function GET(request: NextRequest) {
           15: "BNB",
         }
         const symbol = symbolMap[pairIndex] || `PAIR-${pairIndex}`
+        
+        // Calculate position size: use from API if available, otherwise calculate from collateral * leverage
+        let positionSizeUsdc = args.positionSizeUSDC || 0
+        if (positionSizeUsdc === 0 && collateral > 0 && leverage > 0) {
+          positionSizeUsdc = collateral * leverage
+        }
+        
+        // Try to get PnL from API response (check multiple possible field names)
+        // Convert to number in case API returns string
+        let pnl = Number(tradeItem._grossPnl || tradeItem.grossPnl || tradeItem.pnl || tradeItem.realizedPnl || 0)
+        
+        // Always calculate PnL when we have the necessary data to validate/correct API values
+        if (openPrice > 0 && closePrice > 0 && positionSizeUsdc > 0) {
+          // Calculate PnL using the same formula as open positions
+          // PnL = (close_price - open_price) / open_price * position_size * direction
+          const priceDiffPct = (closePrice - openPrice) / openPrice
+          const adjustedPriceDiff = isLong ? priceDiffPct : -priceDiffPct
+          const calculatedPnl = adjustedPriceDiff * positionSizeUsdc
+          
+          const apiPnl = pnl
+          
+          // Use calculated PnL if:
+          // 1. API PnL is exactly 0 (or very close to 0) AND calculated PnL is significantly different (not close to 0)
+          //    This catches cases where API incorrectly returns 0.00 for a trade with actual profit/loss
+          // 2. API PnL is null/undefined
+          // 3. API PnL differs significantly from calculated (>10% difference)
+          const apiPnlIsZero = Math.abs(pnl) < 0.001 // Consider 0.001 as "zero" to handle floating point
+          const calculatedPnlIsSignificant = Math.abs(calculatedPnl) >= 0.01 // At least 1 cent difference
+          
+          if (pnl === null || pnl === undefined || isNaN(pnl)) {
+            // API PnL is missing - use calculated
+            pnl = calculatedPnl
+            console.log(`[TradeHistory] API PnL missing, using calculated: ${calculatedPnl.toFixed(2)} for ${symbol}`)
+          } else if (apiPnlIsZero && calculatedPnlIsSignificant) {
+            // API returned 0.00 but calculated shows significant profit/loss - use calculated
+            pnl = calculatedPnl
+            console.log(`[TradeHistory] API PnL was 0.00 but calculated shows ${calculatedPnl.toFixed(2)}, using calculated for ${symbol}`)
+          } else if (!apiPnlIsZero && calculatedPnlIsSignificant && Math.abs(pnl - calculatedPnl) > Math.abs(calculatedPnl) * 0.1) {
+            // API PnL exists but differs significantly from calculated (>10%) - use calculated
+            pnl = calculatedPnl
+            console.log(`[TradeHistory] API PnL (${apiPnl.toFixed(2)}) differs from calculated (${calculatedPnl.toFixed(2)}), using calculated for ${symbol}`)
+          }
+          // Otherwise, trust API PnL (it's close to calculated or both are near zero)
+        }
+        
+        let timestamp = 0
+        if (tradeItem.timeStamp) {
+          try {
+            timestamp = Math.floor(new Date(tradeItem.timeStamp).getTime() / 1000)
+          } catch {
+            timestamp = tradeData.timestamp || 0
+          }
+        } else {
+          timestamp = tradeData.timestamp || 0
+        }
         
         const date = timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : ""
         
