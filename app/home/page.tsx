@@ -1821,7 +1821,6 @@ const TradeHistoryTab = ({
                       <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Close Price</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">PnL</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Closed At</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-[#9ca3af] uppercase">Tx</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1886,21 +1885,6 @@ const TradeHistoryTab = ({
                           
                           <td className="px-4 py-4">
                             <span className="text-[#9ca3af] text-xs">{dateLabel}</span>
-                          </td>
-                          
-                          <td className="px-4 py-4">
-                            {trade.tx_hash ? (
-                              <a 
-                                href={`https://basescan.org/tx/${trade.tx_hash}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[#8759ff] text-xs hover:underline"
-                              >
-                                View Tx
-                              </a>
-                            ) : (
-                              <span className="text-[#9ca3af] text-xs">N/A</span>
-                            )}
                           </td>
                         </tr>
                       )

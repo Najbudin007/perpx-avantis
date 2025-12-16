@@ -146,48 +146,22 @@ export async function GET(request: NextRequest) {
         }
         const symbol = symbolMap[pairIndex] || `PAIR-${pairIndex}`
         
-        // Calculate position size: use from API if available, otherwise calculate from collateral * leverage
-        let positionSizeUsdc = args.positionSizeUSDC || 0
+        // Calculate position size: use original position size from trade data if available
+        // The original position size is in tradeData.positionSizeUSDC (when position was opened)
+        // Fall back to args.positionSizeUSDC (position size at close) if original not available
+        // Finally fall back to calculated: collateral * leverage
+        let positionSizeUsdc = tradeData.positionSizeUSDC || args.positionSizeUSDC || 0
         if (positionSizeUsdc === 0 && collateral > 0 && leverage > 0) {
           positionSizeUsdc = collateral * leverage
         }
         
-        // Try to get PnL from API response (check multiple possible field names)
-        // Convert to number in case API returns string
-        let pnl = Number(tradeItem._grossPnl || tradeItem.grossPnl || tradeItem.pnl || tradeItem.realizedPnl || 0)
+        // Always use _grossPnl from Avantis API - it's the source of truth that includes all fees
+        // The _grossPnl value from Avantis dashboard is already calculated correctly with fees accounted for
+        const pnl = Number(tradeItem._grossPnl || tradeItem.grossPnl || tradeItem.pnl || tradeItem.realizedPnl || 0)
         
-        // Always calculate PnL when we have the necessary data to validate/correct API values
-        if (openPrice > 0 && closePrice > 0 && positionSizeUsdc > 0) {
-          // Calculate PnL using the same formula as open positions
-          // PnL = (close_price - open_price) / open_price * position_size * direction
-          const priceDiffPct = (closePrice - openPrice) / openPrice
-          const adjustedPriceDiff = isLong ? priceDiffPct : -priceDiffPct
-          const calculatedPnl = adjustedPriceDiff * positionSizeUsdc
-          
-          const apiPnl = pnl
-          
-          // Use calculated PnL if:
-          // 1. API PnL is exactly 0 (or very close to 0) AND calculated PnL is significantly different (not close to 0)
-          //    This catches cases where API incorrectly returns 0.00 for a trade with actual profit/loss
-          // 2. API PnL is null/undefined
-          // 3. API PnL differs significantly from calculated (>10% difference)
-          const apiPnlIsZero = Math.abs(pnl) < 0.001 // Consider 0.001 as "zero" to handle floating point
-          const calculatedPnlIsSignificant = Math.abs(calculatedPnl) >= 0.01 // At least 1 cent difference
-          
-          if (pnl === null || pnl === undefined || isNaN(pnl)) {
-            // API PnL is missing - use calculated
-            pnl = calculatedPnl
-            console.log(`[TradeHistory] API PnL missing, using calculated: ${calculatedPnl.toFixed(2)} for ${symbol}`)
-          } else if (apiPnlIsZero && calculatedPnlIsSignificant) {
-            // API returned 0.00 but calculated shows significant profit/loss - use calculated
-            pnl = calculatedPnl
-            console.log(`[TradeHistory] API PnL was 0.00 but calculated shows ${calculatedPnl.toFixed(2)}, using calculated for ${symbol}`)
-          } else if (!apiPnlIsZero && calculatedPnlIsSignificant && Math.abs(pnl - calculatedPnl) > Math.abs(calculatedPnl) * 0.1) {
-            // API PnL exists but differs significantly from calculated (>10%) - use calculated
-            pnl = calculatedPnl
-            console.log(`[TradeHistory] API PnL (${apiPnl.toFixed(2)}) differs from calculated (${calculatedPnl.toFixed(2)}), using calculated for ${symbol}`)
-          }
-          // Otherwise, trust API PnL (it's close to calculated or both are near zero)
+        // Log for debugging if PNL is missing
+        if (isNaN(pnl) || pnl === null || pnl === undefined) {
+          console.warn(`[TradeHistory] Missing PNL for trade ${tradeItem._id}, symbol ${symbol}`)
         }
         
         let timestamp = 0
@@ -218,6 +192,8 @@ export async function GET(request: NextRequest) {
           tp,
           sl,
           pnl,
+          // Calculate PNL percentage based on collateral (initial position size)
+          // This matches how Avantis dashboard calculates PNL percentage
           pnl_percentage: collateral > 0 ? (pnl / collateral) * 100 : 0,
           timestamp,
           open_timestamp: tradeData.timestamp || timestamp,
