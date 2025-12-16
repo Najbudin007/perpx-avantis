@@ -228,11 +228,48 @@ export function usePositions() {
       const hasExistingPositions = positionData && positionData.openPositions > 0;
       const isBackgroundRefresh = !!positionData; // If we have existing data, this is a background refresh
       
+      // Helper function to create a unique key for a position
+      const getPositionKey = (pos: Position): string => {
+        // Use pair_index + index if available, otherwise fall back to coin + side
+        if (pos.pair_index !== undefined && pos.pair_index !== null) {
+          const index = pos.index !== undefined && pos.index !== null ? pos.index : 0;
+          return `${pos.pair_index}-${index}`;
+        }
+        return `${pos.coin || pos.symbol || ''}-${pos.side}`;
+      };
+      
       // Check if we have valid positions array (non-empty)
       if (data.positions && Array.isArray(data.positions) && data.positions.length > 0) {
-        // We have non-empty positions - safe to update
         const previousPositionCount = openPositionsCountRef.current;
         const currentPositionCount = data.openPositions || 0;
+        
+        // 🛑 SMART UPDATE: Only refresh if positions actually changed (added/removed)
+        // If all positions already exist in UI, maintain state and let live prices handle updates
+        if (positionData && positionData.positions && positionData.positions.length > 0) {
+          const existingKeys = new Set(positionData.positions.map(getPositionKey));
+          const newKeys = new Set(data.positions.map(getPositionKey));
+          
+          // Check if positions changed (new position added or removed)
+          const hasNewPosition = data.positions.some((pos: Position) => !existingKeys.has(getPositionKey(pos)));
+          const hasRemovedPosition = positionData.positions.some((pos: Position) => !newKeys.has(getPositionKey(pos)));
+          
+          if (!hasNewPosition && !hasRemovedPosition && currentPositionCount === previousPositionCount) {
+            // All positions already exist in UI - don't refresh, maintain state
+            // Live prices will handle real-time updates via useLivePrices hook
+            console.log('[usePositions] All positions already in UI - maintaining state, skipping refresh');
+            setHasStaleData(false);
+            // Note: finally block will handle setIsLoading(false) and isFetchingRef.current = false
+            return; // Exit early, don't update state
+          }
+          
+          if (hasNewPosition) {
+            console.log('[usePositions] New position detected - refreshing to add new row');
+          }
+          if (hasRemovedPosition) {
+            console.log('[usePositions] Position removed - refreshing to remove row');
+          }
+        }
+        
         openPositionsCountRef.current = currentPositionCount;
         
         // Dispatch events only if count actually changed
@@ -551,11 +588,21 @@ export function usePositions() {
   }, [token, walletAddressString]); // Only primitives - use ref for positionData
 
   // 🔄 LIGHT AUTO-REFRESH: keep positions reasonably fresh without aggressive polling
+  // Only refresh when there are open positions - maintain state when no positions exist
   useEffect(() => {
     const wallet = walletAddressString;
     const hasToken = !!token;
 
     if (!wallet || !hasToken) {
+      return;
+    }
+
+    // Only set up auto-refresh if we have open positions
+    // When there are no positions, maintain state and don't poll
+    const hasOpenPositions = (positionData?.openPositions ?? 0) > 0;
+    
+    if (!hasOpenPositions) {
+      // No positions - don't set up polling, maintain current state
       return;
     }
 
@@ -572,7 +619,7 @@ export function usePositions() {
     return () => {
       clearInterval(intervalId);
     };
-  }, [token, walletAddressString, fetchPositionsSafe]);
+  }, [token, walletAddressString, fetchPositionsSafe, positionData?.openPositions]);
 
   // Listen for position change events - stable handler
   useEffect(() => {
