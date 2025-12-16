@@ -6,7 +6,7 @@ import { usePositions } from './usePositions';
 import { useTradingFee } from './useTradingFee';
 import { useIntegratedWallet } from '@/lib/wallet/IntegratedWalletContext';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { calculateLeverageFromBalance, getDefaultLeverage } from '@/lib/utils/leverageCalculator';
+import { calculateLeverageFromBalance } from '@/lib/utils/leverageCalculator';
 
 export interface TradingSessionState {
   id: string;
@@ -170,7 +170,7 @@ export function useTradingSession() {
     profitGoal?: number;
     targetProfit?: number;
     maxPerSession?: number;
-    leverage?: number;
+    leverage?: number; // DEPRECATED: Leverage is now system-controlled and ignored if provided
     lossThreshold?: number;
     walletAddress?: string;
     avantisApiWallet?: string;
@@ -201,11 +201,9 @@ export function useTradingSession() {
         throw new Error(`Failed to pay commission fee: ${feeError instanceof Error ? feeError.message : 'Unknown error'}`);
       }
 
-      // Step 2: Calculate leverage based on balance if not specified
+      // Step 2: Calculate leverage based on balance (system-controlled, no user input)
       const budget = config.maxBudget || config.investmentAmount || 50;
-      const calculatedLeverage = config.leverage 
-        ? config.leverage 
-        : calculateLeverageFromBalance(budget, config.leverage);
+      const calculatedLeverage = calculateLeverageFromBalance(budget);
       
       // Step 3: Get trading wallet with private key from API
       onProgress?.('session', 'Retrieving wallet credentials...');
