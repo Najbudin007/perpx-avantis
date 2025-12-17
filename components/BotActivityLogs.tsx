@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useTradingSession } from '@/lib/hooks/useTradingSession'
-import { useIntegratedWallet } from '@/lib/wallet/IntegratedWalletContext'
+import { useAuth } from '@/lib/auth/AuthContext'
 
 export interface BotLogEntry {
   id: string
@@ -18,123 +18,53 @@ interface BotActivityLogsProps {
   onPositionOpened?: () => void
 }
 
-// Helper to generate realistic bot logs based on session state
-function generateBotLogs(
-  sessionStatus: string | undefined,
-  balance: number,
-  cycleNumber: number
-): BotLogEntry[] {
-  const logs: BotLogEntry[] = []
-  const now = new Date()
-  
-  if (!sessionStatus || sessionStatus !== 'running') {
-    return []
+/**
+ * Map API log types to UI categories
+ */
+function mapLogTypeToCategory(type: string): BotLogEntry['category'] {
+  switch (type) {
+    case 'position_success':
+    case 'position_attempt':
+      return 'execution'
+    case 'position_failed':
+      return 'execution'
+    case 'indicator':
+      return 'signal'
+    case 'cycle':
+      return 'connection'
+    case 'scanning':
+      return 'signal'
+    default:
+      return 'status'
   }
+}
 
-  // Connection / Session logs
-  logs.push({
-    id: `session-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 10000),
-    category: 'connection',
-    message: `[API] Trading session active`,
-    type: 'success'
-  })
-
-  // Pre-Trade Checks
-  logs.push({
-    id: `pretrade-positions-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 9000),
-    category: 'pre-trade',
-    message: `[EXEC_BOT] Current open positions: 0`,
-    type: 'info'
-  })
-
-  logs.push({
-    id: `pretrade-limit-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 8500),
-    category: 'pre-trade',
-    message: `[EXEC_BOT] Position limit check passed (0/1)`,
-    type: 'success'
-  })
-
-  // Signal Discovery
-  logs.push({
-    id: `signal-step-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 8000),
-    category: 'signal',
-    message: `━━━ STEP 2: FIND BEST SIGNAL ━━━`,
-    type: 'info'
-  })
-
-  logs.push({
-    id: `signal-regime-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 7500),
-    category: 'signal',
-    message: `Market regime: neutral`,
-    type: 'info'
-  })
-
-  logs.push({
-    id: `signal-priority-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 7000),
-    category: 'signal',
-    message: `Evaluating priority symbols: BTC, ETH, SOL`,
-    type: 'progress'
-  })
-
-  // Per-asset evaluation (simulated)
-  const assets = ['BTC', 'ETH', 'SOL']
-  const randomAsset = assets[cycleNumber % assets.length]
-  const randomScore = (0.5 + Math.random() * 0.5).toFixed(2)
-  const randomMOS = (Math.random() * 0.4 - 0.1).toFixed(4)
-  const randomADX = (15 + Math.random() * 20).toFixed(1)
-  const randomRSI = (30 + Math.random() * 40).toFixed(1)
-
-  logs.push({
-    id: `signal-eval-${randomAsset}-${cycleNumber}`,
-    timestamp: new Date(now.getTime() - 5000),
-    category: 'signal',
-    message: `📈 ${randomAsset} indicators: MOS=${randomMOS} | ADX=${randomADX} | RSI=${randomRSI}`,
-    type: 'info'
-  })
-
-  // Decision - show scanning status
-  const hasSignal = parseFloat(randomScore) >= 0.85
-  if (hasSignal) {
-    logs.push({
-      id: `decision-best-${cycleNumber}`,
-      timestamp: new Date(now.getTime() - 3000),
-      category: 'decision',
-      message: `✅ Best signal: ${randomAsset} (score=${randomScore}, long)`,
-      type: 'success'
-    })
-  } else {
-    logs.push({
-      id: `decision-scanning-${cycleNumber}`,
-      timestamp: new Date(now.getTime() - 3000),
-      category: 'decision',
-      message: `🔍 Scanning for quality signals... (cycle ${cycleNumber})`,
-      type: 'progress'
-    })
+/**
+ * Map API log types to UI types
+ */
+function mapLogTypeToUIType(type: string): BotLogEntry['type'] {
+  switch (type) {
+    case 'position_success':
+      return 'success'
+    case 'position_failed':
+      return 'error'
+    case 'position_attempt':
+      return 'progress'
+    case 'indicator':
+      return 'info'
+    case 'scanning':
+      return 'progress'
+    default:
+      return 'info'
   }
-
-  // Status summary
-  logs.push({
-    id: `status-balance-${cycleNumber}`,
-    timestamp: now,
-    category: 'status',
-    message: `📊 Balance: $${balance.toFixed(2)} | Waiting for high-confidence signal`,
-    type: 'info'
-  })
-
-  return logs
 }
 
 export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotActivityLogsProps) {
   const { tradingSession } = useTradingSession()
-  const { avantisBalance } = useIntegratedWallet()
+  const { token } = useAuth()
   const [logs, setLogs] = useState<BotLogEntry[]>([])
-  const [cycleNumber, setCycleNumber] = useState(1)
+  const [isLoadingLogs, setIsLoadingLogs] = useState(true)
+  const [noLogsYet, setNoLogsYet] = useState(false)
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const prevPositionCount = useRef(openPositionsCount)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -162,10 +92,10 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
     prevPositionCount.current = openPositionsCount
   }, [openPositionsCount, onPositionOpened])
 
-  // Generate logs when session is running and no positions yet
+  // Fetch REAL logs from backend
   useEffect(() => {
     // Stop immediately if positions exist
-    if (!tradingSession || tradingSession.status !== 'running' || openPositionsCount > 0) {
+    if (!tradingSession || tradingSession.status !== 'running' || openPositionsCount > 0 || !token) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
         intervalRef.current = null
@@ -173,11 +103,57 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
       return
     }
 
-    // Initial logs
-    const initialLogs = generateBotLogs(tradingSession.status, avantisBalance, cycleNumber)
-    setLogs(initialLogs)
+    const fetchRealLogs = async () => {
+      try {
+        const sessionId = tradingSession.sessionId || tradingSession.id
+        const response = await fetch(
+          `/api/trading/logs?limit=50${sessionId ? `&sessionId=${sessionId}` : ''}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          }
+        )
+        
+        if (!response.ok) {
+          console.warn('[BotActivityLogs] Failed to fetch logs:', response.statusText)
+          setNoLogsYet(true)
+          setIsLoadingLogs(false)
+          return
+        }
 
-    // Update logs periodically (every 15 seconds to simulate scanning cycles)
+        const data = await response.json()
+        
+        if (data.logs && data.logs.length > 0) {
+          // Transform backend logs to UI format
+          const transformedLogs: BotLogEntry[] = data.logs.map((log: any) => ({
+            id: log.id,
+            timestamp: new Date(log.timestamp),
+            category: mapLogTypeToCategory(log.type),
+            message: log.message,
+            type: mapLogTypeToUIType(log.type),
+            details: log.details
+          }))
+          
+          setLogs(transformedLogs)
+          setNoLogsYet(false)
+        } else {
+          // No logs yet, but session is running
+          setNoLogsYet(true)
+        }
+        
+        setIsLoadingLogs(false)
+      } catch (error) {
+        console.error('[BotActivityLogs] Error fetching logs:', error)
+        setNoLogsYet(true)
+        setIsLoadingLogs(false)
+      }
+    }
+
+    // Initial fetch
+    fetchRealLogs()
+
+    // Poll for updates every 3 seconds (aggressive during scanning)
     intervalRef.current = setInterval(() => {
       // Double-check positions haven't appeared
       if (openPositionsCount > 0) {
@@ -188,17 +164,8 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
         return
       }
       
-      setCycleNumber(prev => {
-        const newCycle = prev + 1
-        const newLogs = generateBotLogs(tradingSession.status, avantisBalance, newCycle)
-        setLogs(prevLogs => {
-          // Keep last 20 logs + new logs
-          const combined = [...prevLogs.slice(-15), ...newLogs]
-          return combined.slice(-30)
-        })
-        return newCycle
-      })
-    }, 15000)
+      fetchRealLogs()
+    }, 3000)
 
     return () => {
       if (intervalRef.current) {
@@ -206,7 +173,7 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
         intervalRef.current = null
       }
     }
-  }, [tradingSession, avantisBalance, openPositionsCount])
+  }, [tradingSession, token, openPositionsCount])
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -249,10 +216,10 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
         <div className="flex items-center space-x-2">
           <div className="w-2 h-2 bg-[#8759ff] rounded-full animate-pulse"></div>
           <span className="text-white font-medium text-sm">Bot Activity</span>
-          <span className="text-[#6b7280] text-xs">(Cycle {cycleNumber})</span>
+          <span className="text-[#6b7280] text-xs">(Real-time logs)</span>
         </div>
         <span className="text-[#6b7280] text-xs">
-          Scanning for signals...
+          {isLoadingLogs ? 'Loading...' : 'Live'}
         </span>
       </div>
       
@@ -261,7 +228,30 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
         ref={logsContainerRef}
         className="max-h-[300px] overflow-y-auto p-4 space-y-2 font-mono text-xs"
       >
-        {logs.map((log) => (
+        {isLoadingLogs && (
+          <div className="flex items-center justify-center py-8 text-[#6b7280]">
+            <div className="w-4 h-4 border-2 border-[#8759ff] border-t-transparent rounded-full animate-spin mr-2"></div>
+            <span>Loading bot activity...</span>
+          </div>
+        )}
+        
+        {!isLoadingLogs && noLogsYet && (
+          <div className="py-8 text-center space-y-3">
+            <div className="flex items-center justify-center space-x-1 text-[#8759ff]">
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse"></div>
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+            </div>
+            <p className="text-[#9ca3af] text-sm">
+              Bot is initializing...
+            </p>
+            <p className="text-[#6b7280] text-xs">
+              Logs will appear here as the bot evaluates signals
+            </p>
+          </div>
+        )}
+        
+        {!isLoadingLogs && !noLogsYet && logs.map((log) => (
           <div 
             key={log.id}
             className={`flex items-start space-x-2 ${getTypeColor(log.type)}`}
@@ -281,21 +271,27 @@ export function BotActivityLogs({ openPositionsCount, onPositionOpened }: BotAct
           </div>
         ))}
         
-        {/* Scanning indicator */}
-        <div className="flex items-center space-x-2 text-[#8759ff] pt-2">
-          <div className="flex space-x-1">
-            <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse"></div>
-            <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-            <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+        {!isLoadingLogs && !noLogsYet && logs.length > 0 && (
+          <div className="flex items-center space-x-2 text-[#8759ff] pt-2 border-t border-[#262626] mt-2">
+            <div className="flex space-x-1">
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse"></div>
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+              <div className="w-1.5 h-1.5 bg-[#8759ff] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+            </div>
+            <span className="text-[#6b7280]">Monitoring markets...</span>
           </div>
-          <span className="text-[#6b7280]">Analyzing market conditions...</span>
-        </div>
+        )}
       </div>
 
       {/* Footer */}
       <div className="px-4 py-2 border-t border-[#262626] bg-[#0d0d0d]">
         <div className="flex items-center justify-between text-[10px] text-[#6b7280]">
-          <span>Position will appear here once signal is confirmed</span>
+          <span>
+            {logs.length > 0 
+              ? `Showing ${logs.length} real-time log${logs.length !== 1 ? 's' : ''}`
+              : 'Position will appear once signal is confirmed'
+            }
+          </span>
           <a 
             href="https://avantisfi.com" 
             target="_blank" 
