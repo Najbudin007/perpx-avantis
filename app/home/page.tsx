@@ -20,8 +20,9 @@ import { DepositModal } from "@/components/DepositModal"
 import { WithdrawModal } from "@/components/WithdrawModal"
 import { BuildTimestamp } from "@/components/BuildTimestamp"
 import { PositionsTable } from "@/components/PositionsTable"
+import { BotActivityLogs } from "@/components/BotActivityLogs"
 import type { Position } from "@/types/trading"
-import { FloatingLiveCard } from "@/components/FloatingLiveCard"
+// FloatingLiveCard removed - all bot activity now shown in Positions tab
 import { Modal } from "@/components/ui/modal"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -583,8 +584,7 @@ const TradingCard = ({
     setIsTrading(true)
     
     try {
-      // Reduced toast messages - only show Live Trading Activity card
-      // No toast for "Starting Trading" - just show the card
+      // Minimal toast messages - bot activity shown in Positions tab
       
       // Start trading session with progress callbacks
       await startTradingSession({
@@ -598,7 +598,7 @@ const TradingCard = ({
       } as any, (step: string, message: string) => {
         try {
           // Minimal toasts - only show session started (not fee/progress updates)
-          // User can see all details in Live Trading Activity card
+          // Bot activity now shown in Positions tab
           if (step === 'complete') {
             // Use setTimeout to ensure toast doesn't crash the app
             setTimeout(() => {
@@ -606,14 +606,14 @@ const TradingCard = ({
                 addToast({
                   type: 'success',
                   title: 'Trading Started',
-                  message: 'Your trading session is now active! Check Live Trading Activity for details.'
+                  message: 'Your trading session is now active! View progress in Positions tab.'
                 })
               } catch (toastError) {
                 console.error('Error showing success toast:', toastError)
               }
             }, 100)
           }
-          // No toast for 'fee' or 'session' - user sees Live Trading Activity card
+          // No toast for 'fee' or 'session' - user sees activity in Positions tab
         } catch (progressError) {
           console.error('Error in progress callback:', progressError)
           // Don't throw - just log the error
@@ -2366,11 +2366,18 @@ export default function HomePage() {
       const currentStatus = tradingSessionStatusRef.current;
       if (currentStatus === 'running') {
         refreshSessionStatusRef.current?.(false); // Just refresh existing session
-        // Also refresh positions when session is active
-        // Reduced frequency to 30 seconds to reduce server load
-        fetchPositionsRef.current?.();
+        // More aggressive polling when bot is scanning (no positions yet)
+        // This ensures we catch positions as soon as they open
+        const hasPositions = positionData?.positions && positionData.positions.length > 0;
+        if (!hasPositions) {
+          // Poll aggressively when actively scanning for positions
+          fetchPositionsRef.current?.(true);
+        } else {
+          // Normal polling when monitoring existing positions
+          fetchPositionsRef.current?.();
+        }
       }
-    }, 30000); // Refresh every 30 seconds (was 10 seconds)
+    }, 5000); // Check every 5 seconds when scanning, but internal logic determines refresh frequency
     
     // Cleanup: Clear interval on unmount or dependency change
     return () => {
@@ -3341,28 +3348,37 @@ export default function HomePage() {
                         {positionData?.error && ` | Error: ${positionData.error}`}
                       </div>
                     )}
-                    <PositionsTable
-                      positions={positionData?.positions || []}
-                      isLoading={positionsLoading}
-                      hasStaleData={hasStaleData}
-                      closingPositions={closingPositions}
-                      onClosePosition={handleClosePosition}
-                    />
-                    {/* Show message if no positions but session is running */}
-                    {!positionsLoading && (!positionData?.positions || positionData.positions.length === 0) && tradingSession?.status === 'running' && (
-                      <div className="text-center py-8 text-gray-400">
-                        <p>No positions found yet.</p>
-                        <p className="text-sm mt-2">Positions will appear here once opened by the trading bot.</p>
-                        <button
-                          onClick={() => fetchPositions?.(true)}
-                          className="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm flex items-center gap-2 mx-auto"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
-                          Refresh Positions
-                        </button>
-                      </div>
+                    {/* Show Bot Activity Logs when session is running but no positions yet */}
+                    {tradingSession?.status === 'running' && (!positionData?.positions || positionData.positions.length === 0) && (
+                      <BotActivityLogs 
+                        openPositionsCount={positionData?.openPositions || 0}
+                        onPositionOpened={() => {
+                          // Force immediate position refresh when bot opens position
+                          fetchPositions?.(true)
+                        }}
+                      />
+                    )}
+                    
+                    {/* Show Positions Table when positions exist */}
+                    {(positionData?.positions && positionData.positions.length > 0) && (
+                      <PositionsTable
+                        positions={positionData.positions}
+                        isLoading={positionsLoading}
+                        hasStaleData={hasStaleData}
+                        closingPositions={closingPositions}
+                        onClosePosition={handleClosePosition}
+                      />
+                    )}
+                    
+                    {/* Show empty state when no session and no positions */}
+                    {!positionsLoading && tradingSession?.status !== 'running' && (!positionData?.positions || positionData.positions.length === 0) && (
+                      <PositionsTable
+                        positions={[]}
+                        isLoading={positionsLoading}
+                        hasStaleData={hasStaleData}
+                        closingPositions={closingPositions}
+                        onClosePosition={handleClosePosition}
+                      />
                     )}
                   </div>
                 )}
@@ -3457,8 +3473,7 @@ export default function HomePage() {
         />
       </div>
 
-      {/* Floating Live Trading Card */}
-      <FloatingLiveCard />
+      {/* FloatingLiveCard removed - all bot activity now shown in Positions tab */}
       
       {/* Session Start Modal - Opens from bottom */}
       {isSessionStartModalOpen && (
@@ -3600,13 +3615,27 @@ export default function HomePage() {
               </div>
             )}
             
-            <PositionsTable
-              positions={positionData?.positions || []}
-              isLoading={positionsLoading}
-              hasStaleData={hasStaleData}
-              closingPositions={closingPositions}
-              onClosePosition={handleClosePosition}
-            />
+            {/* Show Bot Activity Logs when session is running but no positions */}
+            {tradingSession?.status === 'running' && (!positionData?.positions || positionData.positions.length === 0) && (
+              <BotActivityLogs 
+                openPositionsCount={positionData?.openPositions || 0}
+                onPositionOpened={() => {
+                  // Force immediate position refresh when bot opens position
+                  fetchPositions?.(true)
+                }}
+              />
+            )}
+            
+            {/* Show Positions Table when positions exist or no session */}
+            {((positionData?.positions && positionData.positions.length > 0) || tradingSession?.status !== 'running') && (
+              <PositionsTable
+                positions={positionData?.positions || []}
+                isLoading={positionsLoading}
+                hasStaleData={hasStaleData}
+                closingPositions={closingPositions}
+                onClosePosition={handleClosePosition}
+              />
+            )}
           </div>
         </div>
       </Modal>
