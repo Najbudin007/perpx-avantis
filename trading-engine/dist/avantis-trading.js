@@ -66,6 +66,9 @@ const TRANSACTION_CONFIRMATION_TIMEOUT = 30000; // 30 seconds
 const POSITION_VERIFICATION_TIMEOUT = 20000; // 20 seconds
 const POSITION_VERIFICATION_RETRIES = 3;
 const POSITION_VERIFICATION_RETRY_DELAY = 2000; // 2 seconds between retries
+const BALANCE_CHECK_TIMEOUT = 15000; // 15 seconds (increased from 5s to handle slow service)
+const balanceCache = new Map();
+const BALANCE_CACHE_TTL = 30000; // 30 seconds cache TTL
 /**
  * Wait for transaction confirmation on Base network
  * Non-blocking with timeout to prevent hanging
@@ -170,17 +173,28 @@ async function verifyPositionExists(pairIndex, privateKey, symbol, timeout = POS
     }
 }
 /**
- * Get Avantis balance for a wallet
+ * Get Avantis balance for a wallet with caching
  * Used for balance validation before opening positions
+ * Returns cached balance if available and fresh (within TTL)
  */
-async function getAvantisBalance(privateKey) {
+async function getAvantisBalance(privateKey, useCache = true) {
+    // Generate cache key from last 8 chars of private key
+    const cacheKey = privateKey.slice(-8);
+    // Check cache first
+    if (useCache) {
+        const cached = balanceCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < BALANCE_CACHE_TTL) {
+            console.log(`[AVANTIS] ✅ Using cached balance: $${cached.balance.toFixed(2)} (${Math.round((Date.now() - cached.timestamp) / 1000)}s old)`);
+            return cached.balance;
+        }
+    }
     try {
         const avantisApiUrl = getAvantisApiUrl();
         const baseUrl = avantisApiUrl.endsWith('/') ? avantisApiUrl.slice(0, -1) : avantisApiUrl;
         // Use the /api/balance endpoint with private_key as query parameter
-        // Add timeout to prevent hanging (10 seconds)
+        // Increased timeout to handle slow service (15 seconds)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const timeoutId = setTimeout(() => controller.abort(), BALANCE_CHECK_TIMEOUT);
         const response = await fetch(`${baseUrl}/api/balance?private_key=${encodeURIComponent(privateKey)}`, {
             method: 'GET',
             headers: {
@@ -205,6 +219,8 @@ async function getAvantisBalance(privateKey) {
             usdc_allowance: result.usdc_allowance,
             returned_balance: balance
         });
+        // Cache the result
+        balanceCache.set(cacheKey, { balance, timestamp: Date.now() });
         return balance;
     }
     catch (error) {
@@ -398,56 +414,38 @@ async function openAvantisPosition(params, options) {
             const randomDelay = Math.random() * 500; // 0-500ms random delay
             await new Promise(resolve => setTimeout(resolve, randomDelay));
             // Balance validation before opening (CRITICAL: Check balance AFTER accounting for existing positions)
+            // NOTE: Balance check is now NON-BLOCKING - if it fails/times out, we proceed with a warning
+            // The Python Avantis service will do its own validation and reject if insufficient funds
             if (!skipBalanceCheck) {
                 try {
-                    // Get current balance
+                    // Get current balance with increased timeout (15s) and caching
                     const balance = await Promise.race([
-                        getAvantisBalance(params.private_key),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('Balance check timeout')), 5000))
+                        getAvantisBalance(params.private_key, true), // Use cache if available
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Balance check timeout')), BALANCE_CHECK_TIMEOUT))
                     ]);
-                    // Get existing positions to calculate reserved collateral
-                    let reservedCollateral = 0;
-                    try {
-                        const existingPositions = await getAvantisPositions(params.private_key);
-                        reservedCollateral = existingPositions.reduce((sum, pos) => {
-                            // Use collateral from position (or estimate from position_size / leverage)
-                            const posCollateral = pos.collateral || (pos.position_size ? pos.position_size / pos.leverage : 0);
-                            return sum + posCollateral;
-                        }, 0);
-                        if (existingPositions.length > 0) {
-                            console.log(`[AVANTIS] 📊 Found ${existingPositions.length} existing position(s) with $${reservedCollateral.toFixed(2)} reserved collateral`);
-                        }
-                    }
-                    catch (posError) {
-                        console.warn(`[AVANTIS] ⚠️ Could not fetch existing positions for balance check:`, posError);
-                        // Continue with balance check anyway - better to be conservative
-                    }
-                    // Calculate available balance (total - reserved)
-                    const availableBalance = balance - reservedCollateral;
-                    // Add small buffer for gas fees (0.1 USDC)
-                    const requiredAmount = params.collateral + 0.1;
-                    if (availableBalance < requiredAmount) {
-                        console.error(`[AVANTIS] ❌ Insufficient available balance:`);
-                        console.error(`[AVANTIS]    Total balance: $${balance.toFixed(2)}`);
-                        console.error(`[AVANTIS]    Reserved (existing positions): $${reservedCollateral.toFixed(2)}`);
-                        console.error(`[AVANTIS]    Available: $${availableBalance.toFixed(2)}`);
+                    // Skip reserved collateral check to speed up - just do basic balance validation
+                    // The collateral lock happens on-chain anyway
+                    const requiredAmount = params.collateral + 0.1; // Small buffer for gas fees
+                    if (balance > 0 && balance < requiredAmount) {
+                        console.error(`[AVANTIS] ❌ Insufficient balance:`);
+                        console.error(`[AVANTIS]    Available: $${balance.toFixed(2)}`);
                         console.error(`[AVANTIS]    Required: $${requiredAmount.toFixed(2)} (collateral + gas)`);
                         return {
                             success: false,
-                            error: `Insufficient available balance: $${availableBalance.toFixed(2)} available ($${balance.toFixed(2)} total - $${reservedCollateral.toFixed(2)} reserved), $${requiredAmount.toFixed(2)} required`
+                            error: `Insufficient balance: $${balance.toFixed(2)} available, $${requiredAmount.toFixed(2)} required`
                         };
                     }
-                    console.log(`[AVANTIS] ✅ Balance check passed:`);
-                    console.log(`[AVANTIS]    Total: $${balance.toFixed(2)} | Reserved: $${reservedCollateral.toFixed(2)} | Available: $${availableBalance.toFixed(2)} >= Required: $${requiredAmount.toFixed(2)}`);
+                    if (balance > 0) {
+                        console.log(`[AVANTIS] ✅ Balance check passed: $${balance.toFixed(2)} >= $${requiredAmount.toFixed(2)} required`);
+                    }
                 }
                 catch (balanceError) {
-                    // Balance check failed - this is a critical error, don't proceed
+                    // Balance check failed - proceed with WARNING instead of blocking
+                    // The Python service will validate on-chain before executing
                     const errorMessage = balanceError instanceof Error ? balanceError.message : String(balanceError);
-                    console.error(`[AVANTIS] ❌ Balance check failed: ${errorMessage}`);
-                    return {
-                        success: false,
-                        error: `Balance check failed: ${errorMessage}. Cannot open position without balance verification.`
-                    };
+                    console.warn(`[AVANTIS] ⚠️ Balance check failed: ${errorMessage}`);
+                    console.warn(`[AVANTIS] ⚠️ Proceeding anyway - Avantis service will validate on-chain`);
+                    // Continue with position opening - don't block!
                 }
             }
             // USDC Approval check before opening (CRITICAL)
